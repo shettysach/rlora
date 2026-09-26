@@ -12,6 +12,7 @@ from planner.psi0 import Psi0Planner
 from sim.env import MjlabEnv
 
 PLANNER_HZ = 30.0  # SONIC Ψ₀ action chunks are sampled at 30 Hz.
+INSTRUCTION = "grasp the backrest of the chair and push it straight under the table"
 
 
 def run(
@@ -62,7 +63,7 @@ def run(
             sync()
             before = time.perf_counter()
             reference_chunks = planner.predict(
-                images, states, ["walk forward"] * num_envs
+                images, states, [INSTRUCTION] * num_envs
             )
             sync()
             planner_times.append(time.perf_counter() - before)
@@ -138,3 +139,7 @@ def main() -> None:
             indent=2,
         )
     )
+
+
+if __name__ == "__main__":
+    main()
