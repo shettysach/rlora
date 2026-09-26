@@ -13,7 +13,8 @@
 
 ## Specifics
 
-- Planner: Ψ₀ (Psi-0) with SONIC-compatible checkpoint Tracker: SONIC (GEAR-SONIC)
+- Planner: Ψ₀ (Psi-0) with a SONIC-compatible checkpoint
+- Controller: SONIC (GEAR-SONIC)
 - Simulation: MJLab / MuJoCo
 - Hardware: 1× RTX 5090
 - LoRA rank: 16 or 32
@@ -50,6 +51,6 @@ A single training iteration is approximately:
 2. Run inference over `n` environments.
 3. Collect one or more rollouts from each environment
 4. Compute task rewards.
-4. Form an RL training batch from the collected trajectories.
+5. Form an RL training batch from the collected trajectories.
 6. Update the LoRA parameters.
 7. Deploy the updated LoRA for the next rollout batch.

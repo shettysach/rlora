@@ -49,10 +49,11 @@ Suggested initial structure:
 ```text
 src/
 ├── planner/
-│   └── psi0.py
-├── tracker/
+│   ├── psi0.py
+│   └── _psi0/
+│       └── model.py
+├── controller/
 │   └── sonic/
-│       ├── observations.py
 │       ├── model.py
 │       └── policy.py
 ├── sim/
@@ -61,9 +62,6 @@ src/
 ├── shared/
 │   └── g1.py
 └── runtime.py
-
-third_party/
-└── Psi0/
 
 tests/
 AIM.md
@@ -81,10 +79,9 @@ Keep the codebase minimal. Do not port unrelated `dsrf` functionality.
 `dsrf` repo is at ../shared/dsrf/. Analyze what is needed. 
 You can use the `cp` command and then modify, rather than writing it all yourself.
 
-Reuse only the pieces that are useful for the new runtime:
+Consult these pieces when useful for the new runtime:
 
 * G1 joint ordering and default positions from `src/shared/g1.py`
-* SONIC observation-layout handling from `src/tracker/sonic/observations.py`
 * SONIC ONNX/CUDA inference utilities where useful
 * relevant SONIC policy logic from `src/tracker/sonic/tracker.py`
 * MJLab G1 environment configuration from `src/sim/config.py`
@@ -117,13 +114,16 @@ and contains assumptions from the older ARDY/VLM architecture.
 
 ## Ψ₀
 
-Use the official Ψ₀ repository as an external dependency, preferably under:
+Port the checkpoint-compatible inference path from the official Ψ₀ repository
+into:
 
 ```text
-third_party/Psi0/
+src/planner/_psi0/
 ```
 
-Do not manually copy the Ψ₀ model implementation into this repository.
+Record the exact upstream commit and preserve its license. Keep training,
+dataset, serving, and visualization code out of this repository. The project
+dependency manifest and lockfile own the complete runtime environment.
 
 Relevant upstream modules include:
 
@@ -309,7 +309,7 @@ while running:
 
     chunks = planner.predict(
         observation.images,
-        observation.state,k
+        observation.state,
         ["walk forward"] * n,
     )
 
@@ -513,7 +513,7 @@ Keep:
 ```
 
 as one tightly coupled runtime.
-Espec
+
 Later, the entire batched runtime can be wrapped as a single Dora worker:
 
 ```text

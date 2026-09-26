@@ -11,6 +11,7 @@ This is a research repository, so requirements and experiments will change quick
 - Avoid LOC growth when a smaller solution is equally clear.
 - Prefer small, focused changes over broad refactors.
 - Do not over-engineer for hypothetical future requirements.
+- Do not add defensive checks for conditions guaranteed by construction, types, or an upstream API contract. Validate only states that can genuinely vary at runtime, such as user input and external artifacts.
 - Performance-critical code may favor efficiency over elegance when the tradeoff is meaningful.
 
 ## Branches

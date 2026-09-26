@@ -1,17 +1,65 @@
 [project]
 name = "rlora"
 version = "0.1.0"
-description = "Add your description here"
+description = "Batched Ψ₀, SONIC, and MJLab robotics runtime"
 readme = "README.md"
 authors = [
     { name = "Sachith Shetty", email = "shettysachith47@gmail.com" }
 ]
-requires-python = ">=3.12"
-dependencies = []
+requires-python = "==3.12.*"
+dependencies = [
+    "diffusers==0.37.0",
+    "numpy==2.4.6",
+    "onnx==1.23.0",
+    "pillow==12.3.0",
+    "qwen-vl-utils==0.0.14",
+    "safetensors==0.6.2",
+    "transformers==4.57.1",
+]
 
-[project.scripts]
-rlora = "rlora:main"
+[project.optional-dependencies]
+cpu = [
+    "mjlab",
+    "onnxruntime==1.26.0",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+]
+cu128 = [
+    "mjlab",
+    "onnxruntime-gpu==1.26.0",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+]
 
-[build-system]
-requires = ["uv_build>=0.12.17,<0.13.0"]
-build-backend = "uv_build"
+[tool.uv]
+package = false
+conflicts = [
+    [{ extra = "cpu" }, { extra = "cu128" }],
+]
+
+[tool.uv.sources]
+mjlab = { git = "https://github.com/mujocolab/mjlab", rev = "0fb8a681136be94ffc636a3dd423cabb97d91f10" }
+warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
+torch = [
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform != 'darwin'" },
+    { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform != 'darwin'" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform != 'darwin'" },
+    { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform != 'darwin'" },
+]
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com/"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
