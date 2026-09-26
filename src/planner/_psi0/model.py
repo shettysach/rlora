@@ -307,7 +307,7 @@ class Psi0Model(nn.Module):
         with safe_open(checkpoint, framework="pt", device="cpu") as weights:
             vlm_state = {
                 key.removeprefix("vlm_model."): weights.get_tensor(key)
-                for key in weights
+                for key in weights.keys()
                 if key.startswith("vlm_model.")
             }
         vlm_state["lm_head.weight"] = vlm_state[
@@ -337,7 +337,7 @@ class Psi0Model(nn.Module):
         with safe_open(checkpoint, framework="pt", device="cpu") as weights:
             action_state = {
                 key.removeprefix("action_header."): weights.get_tensor(key)
-                for key in weights
+                for key in weights.keys()
                 if key.startswith("action_header.")
             }
         action_header.load_state_dict(action_state, strict=True)
