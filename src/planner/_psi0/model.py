@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import cast
 
 import torch
 import torch.nn.functional as F
-from diffusers import FlowMatchEulerDiscreteScheduler
 from diffusers.models.attention import FeedForward
-from diffusers.models.attention_processor import Attention
+from diffusers.models.attention_processor import Attention, AttnProcessor
 from diffusers.models.embeddings import CombinedTimestepTextProjEmbeddings
+from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
+    FlowMatchEulerDiscreteScheduler,
+    FlowMatchEulerDiscreteSchedulerOutput,
+)
 from PIL import Image
 from qwen_vl_utils import process_vision_info
 from safetensors import safe_open
@@ -73,7 +77,7 @@ class AdaLayerNormZero(nn.Module):
         return normalized, gate_attention, shift_mlp, scale_mlp, gate_mlp
 
 
-class JointVLAAttnProcessor:
+class JointVLAAttnProcessor(AttnProcessor):
     def __call__(
         self,
         attention: Attention,
@@ -84,24 +88,33 @@ class JointVLAAttnProcessor:
         batch_size = hidden_states.shape[0]
         head_dim = attention.inner_dim // attention.heads
 
+        to_k = cast(nn.Linear, attention.to_k)
+        to_v = cast(nn.Linear, attention.to_v)
+        norm_q = cast(nn.Module, attention.norm_q)
+        norm_k = cast(nn.Module, attention.norm_k)
+        add_k_proj = cast(nn.Linear, attention.add_k_proj)
+        add_v_proj = cast(nn.Linear, attention.add_v_proj)
+        norm_added_k = cast(nn.Module, attention.norm_added_k)
+        to_out = cast(nn.ModuleList, attention.to_out)
+
         query = attention.to_q(hidden_states)
-        key = attention.to_k(hidden_states)
-        value = attention.to_v(hidden_states)
+        key = to_k(hidden_states)
+        value = to_v(hidden_states)
         query = query.view(batch_size, -1, attention.heads, head_dim).transpose(1, 2)
         key = key.view(batch_size, -1, attention.heads, head_dim).transpose(1, 2)
         value = value.view(batch_size, -1, attention.heads, head_dim).transpose(1, 2)
-        query = attention.norm_q(query)
-        key = attention.norm_k(key)
+        query = norm_q(query)
+        key = norm_k(key)
 
-        context_key = attention.add_k_proj(encoder_hidden_states)
-        context_value = attention.add_v_proj(encoder_hidden_states)
+        context_key = add_k_proj(encoder_hidden_states)
+        context_value = add_v_proj(encoder_hidden_states)
         context_key = context_key.view(
             batch_size, -1, attention.heads, head_dim
         ).transpose(1, 2)
         context_value = context_value.view(
             batch_size, -1, attention.heads, head_dim
         ).transpose(1, 2)
-        context_key = attention.norm_added_k(context_key)
+        context_key = norm_added_k(context_key)
 
         action_length = hidden_states.shape[1]
         key = torch.cat((key, context_key), dim=2)
@@ -117,7 +130,7 @@ class JointVLAAttnProcessor:
             query, key, value, attn_mask=joint_mask[:, None, None]
         )
         output = output.transpose(1, 2).reshape(batch_size, -1, attention.inner_dim)
-        output = attention.to_out[1](attention.to_out[0](output))
+        output = to_out[1](to_out[0](output))
         return output
 
 
@@ -303,11 +316,12 @@ class Psi0Model(nn.Module):
         vlm_config.dtype = torch.bfloat16
         vlm_config.text_config.dtype = torch.bfloat16
         vlm_config.vision_config.dtype = torch.bfloat16
-        vlm = Qwen3VLForConditionalGeneration(vlm_config).to(torch.bfloat16)
+        vlm = Qwen3VLForConditionalGeneration(vlm_config)
+        vlm.bfloat16()
         with safe_open(checkpoint, framework="pt", device="cpu") as weights:
             vlm_state = {
                 key.removeprefix("vlm_model."): weights.get_tensor(key)
-                for key in weights.keys()
+                for key in weights.keys()  # noqa: SIM118 - safe_open is not iterable
                 if key.startswith("vlm_model.")
             }
         vlm_state["lm_head.weight"] = vlm_state[
@@ -317,11 +331,12 @@ class Psi0Model(nn.Module):
             vlm.resize_token_embeddings(
                 vlm_state["lm_head.weight"].shape[0],
                 pad_to_multiple_of=192,
-                mean_resizing=True,
+                mean_resizing=False,
             )
         vlm.load_state_dict(vlm_state, strict=True)
         del vlm_state
-        vlm.to(device).eval()
+        nn.Module.to(vlm, device)
+        vlm.eval()
 
         action_header = ActionTransformerModel(
             action_dim=model_config["action_dim"],
@@ -337,7 +352,7 @@ class Psi0Model(nn.Module):
         with safe_open(checkpoint, framework="pt", device="cpu") as weights:
             action_state = {
                 key.removeprefix("action_header."): weights.get_tensor(key)
-                for key in weights.keys()
+                for key in weights.keys()  # noqa: SIM118 - safe_open is not iterable
                 if key.startswith("action_header.")
             }
         action_header.load_state_dict(action_state, strict=True)
@@ -389,8 +404,9 @@ class Psi0Model(nn.Module):
             text = self.processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
-            image_inputs, video_inputs = process_vision_info(
-                [messages], image_patch_size=16
+            image_inputs, video_inputs = cast(
+                tuple[object, object],
+                process_vision_info([messages], image_patch_size=16),
             )
             inputs = self.processor(
                 text=[text],
@@ -428,7 +444,8 @@ class Psi0Model(nn.Module):
                 device=self.device,
             )
             self.scheduler.set_timesteps(num_inference_steps, device=self.device)
-            for timestep in self.scheduler.timesteps:
+            timesteps = cast(torch.Tensor, self.scheduler.timesteps)
+            for timestep in timesteps:
                 batch_timestep = timestep.expand(states.shape[0])
                 prediction = self.action_header(
                     action,
@@ -438,5 +455,11 @@ class Psi0Model(nn.Module):
                     pooled_projections,
                     attention_mask,
                 )
-                action = self.scheduler.step(prediction, timestep, action).prev_sample
+                step = cast(
+                    FlowMatchEulerDiscreteSchedulerOutput,
+                    self.scheduler.step(
+                        prediction, timestep, cast(torch.FloatTensor, action)
+                    ),
+                )
+                action = step.prev_sample
         return action.float()
