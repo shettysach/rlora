@@ -39,6 +39,9 @@ class SonicPolicy:
         self.sonic_from_mjlab = torch.as_tensor(SONIC_FROM_MJLAB, device=self.device)
         self.mjlab_from_sonic = torch.as_tensor(MJLAB_FROM_SONIC, device=self.device)
 
+    def reset(self) -> None:
+        self.model.input.zero_()
+
     def act(
         self,
         *,

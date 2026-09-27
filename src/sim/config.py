@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
+import mujoco
 from mjlab.asset_zoo.robots.unitree_g1.g1_constants import (
     G1_ACTUATOR_4010,
     G1_ACTUATOR_5020,
@@ -19,6 +20,27 @@ from mjlab.scene import SceneCfg
 from mjlab.sensor import CameraSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
+from mjlab.viewer import ViewerConfig
+
+from walk_to_target import GOAL_RADIUS, GOAL_X
+
+if TYPE_CHECKING:
+    from mujoco import MjSpec  # ty: ignore[unresolved-import]
+
+MJGEOM_CYLINDER = mujoco.mjtGeom.mjGEOM_CYLINDER  # ty: ignore[unresolved-attribute]
+
+
+def _add_goal(spec: MjSpec) -> None:
+    spec.worldbody.add_geom(
+        name="walk_target",
+        type=MJGEOM_CYLINDER,
+        pos=(GOAL_X, 0.0, 0.006),
+        size=(GOAL_RADIUS, 0.006, 0.0),
+        rgba=(0.05, 0.9, 0.1, 1.0),
+        contype=0,
+        conaffinity=0,
+        mass=0.0,
+    )
 
 
 def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
@@ -75,6 +97,7 @@ def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
                 fovy=54.0,
             ),
         ),
+        spec_fn=_add_goal,
     )
     return ManagerBasedRlEnvCfg(
         decimation=4,
@@ -88,5 +111,12 @@ def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
             )
         },
         sim=SimulationCfg(njmax=128, mujoco=MujocoCfg(timestep=0.005)),
+        viewer=ViewerConfig(
+            distance=4.0,
+            elevation=-20.0,
+            azimuth=135.0,
+            lookat=(1.0, 0.0, 0.8),
+            max_extra_envs=0,
+        ),
         episode_length_s=0.0,
     )

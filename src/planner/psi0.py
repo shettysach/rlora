@@ -5,6 +5,7 @@ from pathlib import Path
 
 import torch
 from PIL import Image
+from torch import nn
 from torchvision.transforms import v2
 
 from planner._psi0 import Psi0Model
@@ -19,6 +20,7 @@ class Psi0Planner:
         self,
         run_dir: Path,
         ckpt_step: int,
+        clip_model: Path,
         device: str = "cuda",
         inference_steps: int = 8,
     ):
@@ -56,9 +58,13 @@ class Psi0Planner:
         )
         self.exec_horizon = model_config["action_exec_horizon"]
         self.state_dim = model_config["odim"]
+        self.clip_model = clip_model
+        self.text_encoder = None
         cache_path = run_dir / model_config["pooled_cache_path"]
         cache = torch.load(cache_path, map_location=self.device, weights_only=True)
-        self.pooled = {key: value.to(self.device) for key, value in cache.items()}
+        self.pooled = {
+            key.lower(): value.to(self.device) for key, value in cache.items()
+        }
 
     def _normalize_state(self, state: torch.Tensor) -> torch.Tensor:
         span = self.state_max - self.state_min
@@ -67,6 +73,31 @@ class Psi0Planner:
         )
         normalized = (state - self.state_min) / span.masked_fill(constant, 1) * 2 - 1
         return normalized.masked_fill(constant, 0).clamp(-1, 1)
+
+    def _pooled_projections(self, instructions: list[str]) -> torch.Tensor:
+        missing = [text for text in instructions if text not in self.pooled]
+        if missing:
+            from transformers import CLIPTextModelWithProjection, CLIPTokenizer
+
+            if self.text_encoder is None:
+                tokenizer = CLIPTokenizer.from_pretrained(
+                    self.clip_model, local_files_only=True
+                )
+                text_model = CLIPTextModelWithProjection.from_pretrained(
+                    self.clip_model,
+                    local_files_only=True,
+                    dtype=torch.bfloat16,
+                )
+                nn.Module.to(text_model, self.device)
+                text_model.eval().requires_grad_(False)
+                self.text_encoder = tokenizer, text_model
+            tokenizer, text_model = self.text_encoder
+            for text in dict.fromkeys(missing):
+                tokens = tokenizer(
+                    [text], padding=True, truncation=True, return_tensors="pt"
+                ).to(self.device)
+                self.pooled[text] = text_model(**tokens).text_embeds[0]
+        return torch.stack([self.pooled[text] for text in instructions])
 
     @torch.inference_mode()
     def predict(
@@ -98,7 +129,7 @@ class Psi0Planner:
             states=normalized,
             instructions=lowered,
             num_inference_steps=self.inference_steps,
-            pooled_projections=torch.stack([self.pooled[text] for text in lowered]),
+            pooled_projections=self._pooled_projections(lowered),
         ).float()
         low = self.action_min[:64]
         high = self.action_max[:64]

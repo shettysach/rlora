@@ -1719,6 +1719,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "diffusers" },
+    { name = "mediapy" },
     { name = "numpy" },
     { name = "onnx" },
     { name = "pillow" },
@@ -1748,6 +1749,7 @@ cu128 = [
 [package.metadata]
 requires-dist = [
     { name = "diffusers", specifier = "==0.37.0" },
+    { name = "mediapy", specifier = "==1.2.7" },
     { name = "mjlab", marker = "extra == 'cpu'", git = "https://github.com/mujocolab/mjlab?rev=0fb8a681136be94ffc636a3dd423cabb97d91f10" },
     { name = "mjlab", marker = "extra == 'cu128'", git = "https://github.com/mujocolab/mjlab?rev=0fb8a681136be94ffc636a3dd423cabb97d91f10" },
     { name = "numpy", specifier = "==2.4.6" },

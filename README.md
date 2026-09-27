@@ -15,8 +15,8 @@ The checkpoint-compatible Ψ₀ inference implementation is vendored under
 `src/planner/_psi0` from physical-superintelligence-lab/Psi0 commit
 `4f3720d45e102b36d7c3e9465ab8062274170518`. The local project owns its full
 Python dependency graph and does not require a Psi0 checkout or a second
-environment. The Qwen processor/config and fallback CLIP encoder are also
-loaded at revisions pinned in the source.
+environment. Uncached instructions use a CLIP model downloaded as a pinned,
+local artifact.
 
 ## Install
 
@@ -40,28 +40,55 @@ The output must name the RTX 5090 and include `CUDAExecutionProvider`.
 Download the released artifacts at pinned revisions:
 
 ```sh
-uv run --extra cu128 --frozen hf download USC-PSI-Lab/psi-model \
+uvx hf download USC-PSI-Lab/psi-model \
   --revision 4c6f9776fc5b18d87945254175e38bb74b9d7748 \
   --include "psi0/sonic-checkpoints/multi-task.psi-dream.2609092156/**" \
   --local-dir artifacts/psi-model
 
-uv run --extra cu128 --frozen hf download nvidia/GEAR-SONIC \
+uvx hf download nvidia/GEAR-SONIC \
   --revision 6733128a3d8a523b1418b06bca3cdf61c8b0987f \
   --include model_decoder.onnx \
   --local-dir artifacts/sonic
+
+uvx hf download openai/clip-vit-large-patch14-336 \
+  --revision 32bd64288804d66eefd0ccbe215aa642df71cc41 \
+  --local-dir artifacts/clip-vit-large-patch14-336
 ```
 
 ## Run
 
 ```sh
 uv run --extra cu128 --frozen python src/runtime.py \
-  --num-envs 2 --chunks 5 \
+  --num-envs 1 --num-episodes 1 --viewer \
   --psi-run-dir artifacts/psi-model/psi0/sonic-checkpoints/multi-task.psi-dream.2609092156 \
   --ckpt-step 40000 \
+  --clip-model artifacts/clip-vit-large-patch14-336 \
   --sonic-bundle artifacts/sonic
 ```
 
-Run with `--num-envs 1, 2, 4, 8` and compare the JSON latency, throughput, displacement, and peak Torch GPU allocation. The Ψ₀ model is invoked once per batch. SONIC also runs once per control step with a batch input. The planner action clock is 30 Hz; SONIC and MJLab run at 50 Hz. The checkpoint's `action_exec_horizon` determines when Ψ₀ replans.
+The viewer is optional and passive. Without `--viewer`, no interactive viewer
+is constructed and no viewer state is copied from GPU to CPU. Record the run
+with `--record-video results/walk.mp4` when needed.
+
+For batched headless evaluation:
+
+```sh
+uv run --extra cu128 --frozen python src/runtime.py \
+  --num-envs 32 --num-episodes 256 \
+  --psi-run-dir artifacts/psi-model/psi0/sonic-checkpoints/multi-task.psi-dream.2609092156 \
+  --ckpt-step 40000 \
+  --clip-model artifacts/clip-vit-large-patch14-336 \
+  --sonic-bundle artifacts/sonic \
+  --save-metrics results/walk-to-target.json
+```
+
+`WalkToTarget-v0` places a non-colliding green marker 2 m in front of G1. Its
+reward is progress, with a +5 success bonus and a -5 fall penalty. Success
+requires the upright robot to remain within 0.2 m of the target below 0.2 m/s
+for 0.5 s. The JSON contains per-episode outcomes, aggregate success and fall
+rates, and runtime throughput. The planner action clock is 30 Hz; SONIC and
+MJLab run at 50 Hz. The checkpoint's `action_exec_horizon` determines when Ψ₀
+replans.
 
 The MJLab G1 has no actuated hands, so the Ψ₀ wrapper packs the 45-D checkpoint
 state from 29 body joint positions in SONIC order, 14 neutral hand values, and

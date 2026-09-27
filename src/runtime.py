@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from pathlib import Path
 
@@ -10,18 +11,22 @@ import torch
 from controller.sonic.policy import SonicPolicy
 from planner.psi0 import Psi0Planner
 from sim.env import MjlabEnv
+from walk_to_target import INSTRUCTION, TASK_NAME, WalkToTarget
 
-PLANNER_HZ = 30.0  # SONIC Ψ₀ action chunks are sampled at 30 Hz.
-INSTRUCTION = "grasp the backrest of the chair and push it straight under the table"
+PLANNER_HZ = 30.0
 
 
 def run(
     num_envs: int,
-    chunks: int,
+    num_episodes: int,
+    episode_seconds: float,
     psi_run_dir: Path,
     ckpt_step: int,
+    clip_model: Path,
     sonic_bundle: Path,
     device: str = "cuda",
+    viewer_enabled: bool = False,
+    record_video: Path | None = None,
 ) -> dict:
     checkpoint = psi_run_dir / "checkpoints" / f"ckpt_{ckpt_step}" / "model.safetensors"
     for path in (
@@ -31,19 +36,29 @@ def run(
     ):
         if not path.is_file():
             raise FileNotFoundError(f"Required model artifact is missing: {path}")
-    env = MjlabEnv(num_envs, device=device)
+    if not clip_model.is_dir():
+        raise FileNotFoundError(f"Required model artifact is missing: {clip_model}")
+
+    env = MjlabEnv(num_envs, device=device, record_video=record_video)
+    viewer = None
     previous_stream = (
         torch.cuda.current_stream() if env.cuda_stream is not None else None
     )
     if env.cuda_stream is not None:
         torch.cuda.set_stream(env.cuda_stream)
     try:
-        planner = Psi0Planner(psi_run_dir, ckpt_step, device=device)
+        planner = Psi0Planner(psi_run_dir, ckpt_step, clip_model, device=device)
         controller = SonicPolicy(
             sonic_bundle, num_envs, device=device, cuda_stream=env.cuda_stream
         )
-        start_pos = env.robot_state().root_pos_w.clone()
-        planner_times, sonic_times = [], []
+        if viewer_enabled:
+            from sim.viewer import SimViewer
+
+            viewer = SimViewer(env.env)
+
+        planner_times: list[float] = []
+        sonic_times: list[float] = []
+        episodes: list[dict] = []
         control_steps = 0
         gpu_used_peak = 0
         wall_start = time.perf_counter()
@@ -58,41 +73,74 @@ def run(
                 free, total = torch.cuda.mem_get_info()
                 gpu_used_peak = max(gpu_used_peak, total - free)
 
-        for _ in range(chunks):
-            images, states = env.rgb(), env.robot_state()
-            sync()
-            before = time.perf_counter()
-            reference_chunks = planner.predict(
-                images, states, [INSTRUCTION] * num_envs
-            )
-            sync()
-            planner_times.append(time.perf_counter() - before)
-            sample_gpu_usage()
-            # Execute only the checkpoint's configured horizon, then replan.
+        num_batches = math.ceil(num_episodes / num_envs)
+        for batch in range(num_batches):
+            env.reset()
+            controller.reset()
+            state = env.robot_state()
+            task = WalkToTarget.start(state, episode_seconds)
             elapsed = 0.0
-            duration = planner.exec_horizon / PLANNER_HZ
-            while elapsed < duration:
-                action_idx = int(elapsed * PLANNER_HZ)
+
+            while elapsed < episode_seconds:
+                images, state = env.rgb(), env.robot_state()
                 sync()
                 before = time.perf_counter()
-                joints = controller.act(
-                    reference=reference_chunks[:, action_idx],
-                    robot_state=env.robot_state(),
+                reference = planner.predict(
+                    images, state, [INSTRUCTION] * num_envs
                 )
                 sync()
-                sonic_times.append(time.perf_counter() - before)
-                env.step(joints)
-                control_steps += 1
-                elapsed += env.step_dt
-            sample_gpu_usage()
+                planner_times.append(time.perf_counter() - before)
+                sample_gpu_usage()
+
+                chunk_elapsed = 0.0
+                chunk_duration = min(
+                    planner.exec_horizon / PLANNER_HZ,
+                    episode_seconds - elapsed,
+                )
+                while chunk_elapsed < chunk_duration:
+                    action_idx = int(chunk_elapsed * PLANNER_HZ)
+                    sync()
+                    before = time.perf_counter()
+                    joints = controller.act(
+                        reference=reference[:, action_idx],
+                        robot_state=env.robot_state(),
+                    )
+                    sync()
+                    sonic_times.append(time.perf_counter() - before)
+                    env.step(joints)
+                    if viewer is not None:
+                        viewer.sync()
+
+                    task.update(env.robot_state(), elapsed, env.step_dt)
+                    control_steps += 1
+                    elapsed += env.step_dt
+                    chunk_elapsed += env.step_dt
+                sample_gpu_usage()
+
+            active = min(num_envs, num_episodes - batch * num_envs)
+            episodes.extend(task.results(env.robot_state(), active))
 
         sync()
         wall_seconds = time.perf_counter() - wall_start
-        displacement = (env.robot_state().root_pos_w - start_pos).cpu().tolist()
+        success_count = sum(episode["success"] for episode in episodes)
+        fall_count = sum(episode["fell"] for episode in episodes)
         return {
+            "task": TASK_NAME,
+            "instruction": INSTRUCTION,
             "num_envs": num_envs,
-            "chunks": chunks,
-            "control_steps": control_steps,
+            "num_episodes": num_episodes,
+            "success_rate": success_count / num_episodes,
+            "fall_rate": fall_count / num_episodes,
+            "mean_final_goal_distance_m": sum(
+                episode["final_goal_distance_m"] for episode in episodes
+            )
+            / num_episodes,
+            "mean_progress_m": sum(episode["progress_m"] for episode in episodes)
+            / num_episodes,
+            "mean_episode_time_s": sum(
+                episode["episode_time_s"] for episode in episodes
+            )
+            / num_episodes,
             "planner_latency_ms": 1000 * sum(planner_times) / len(planner_times),
             "planner_throughput_envs_per_s": num_envs
             * len(planner_times)
@@ -105,40 +153,54 @@ def run(
             "gpu_used_bytes_sampled_peak": gpu_used_peak
             if device.startswith("cuda")
             else None,
-            "root_displacement_xyz": displacement,
+            "episodes": episodes,
         }
     finally:
+        if viewer is not None:
+            viewer.close()
         env.close()
         if previous_stream is not None:
             torch.cuda.set_stream(previous_stream)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Batched Ψ₀ → SONIC → MJLab walking demo"
-    )
-    parser.add_argument("--num-envs", type=int, default=2)
-    parser.add_argument("--chunks", type=int, default=5)
+    parser = argparse.ArgumentParser(description="Evaluate WalkToTarget-v0")
+    parser.add_argument("--num-envs", type=int, default=1)
+    parser.add_argument("--num-episodes", type=int, default=1)
+    parser.add_argument("--episode-seconds", type=float, default=8.0)
     parser.add_argument("--psi-run-dir", type=Path, required=True)
     parser.add_argument("--ckpt-step", type=int, required=True)
+    parser.add_argument("--clip-model", type=Path, required=True)
     parser.add_argument("--sonic-bundle", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--viewer", action="store_true")
+    parser.add_argument("--record-video", type=Path)
+    parser.add_argument("--save-metrics", type=Path)
     args = parser.parse_args()
-    if args.chunks < 1:
-        parser.error("--chunks must be positive")
-    print(
-        json.dumps(
-            run(
-                args.num_envs,
-                args.chunks,
-                args.psi_run_dir,
-                args.ckpt_step,
-                args.sonic_bundle,
-                args.device,
-            ),
-            indent=2,
-        )
+    if args.num_envs < 1:
+        parser.error("--num-envs must be positive")
+    if args.num_episodes < 1:
+        parser.error("--num-episodes must be positive")
+    if args.episode_seconds <= 0:
+        parser.error("--episode-seconds must be positive")
+
+    result = run(
+        args.num_envs,
+        args.num_episodes,
+        args.episode_seconds,
+        args.psi_run_dir,
+        args.ckpt_step,
+        args.clip_model,
+        args.sonic_bundle,
+        args.device,
+        args.viewer,
+        args.record_video,
     )
+    output = json.dumps(result, indent=2)
+    print(output)
+    if args.save_metrics is not None:
+        args.save_metrics.parent.mkdir(parents=True, exist_ok=True)
+        args.save_metrics.write_text(output + "\n")
 
 
 if __name__ == "__main__":

@@ -32,7 +32,13 @@ def test_one_decoder_keeps_two_histories_independent(tmp_path: Path) -> None:
     policy = SonicPolicy(tmp_path, batch_size=2, device="cpu")
     zeros = lambda *shape: torch.zeros(shape)
     state = RobotState(
-        zeros(2, 3), zeros(2, 4), zeros(2, 3), zeros(2, 3), zeros(2, 29), zeros(2, 29)
+        zeros(2, 3),
+        zeros(2, 4),
+        zeros(2, 3),
+        zeros(2, 3),
+        zeros(2, 3),
+        zeros(2, 29),
+        zeros(2, 29),
     )
     tokens = zeros(2, 64)
     tokens[0, :29] = 1
