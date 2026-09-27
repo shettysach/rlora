@@ -50,9 +50,11 @@ uvx hf download nvidia/GEAR-SONIC \
   --include model_decoder.onnx \
   --local-dir artifacts/sonic
 
-uvx hf download openai/clip-vit-large-patch14-336 \
+uvx hf download openai/clip-vit-large-patch14 \
+  config.json merges.txt model.safetensors special_tokens_map.json \
+  tokenizer.json tokenizer_config.json vocab.json \
   --revision 32bd64288804d66eefd0ccbe215aa642df71cc41 \
-  --local-dir artifacts/clip-vit-large-patch14-336
+  --local-dir artifacts/clip-vit-large-patch14
 ```
 
 ## Run
@@ -62,7 +64,7 @@ uv run --extra cu128 --frozen python src/runtime.py \
   --num-envs 1 --num-episodes 1 --viewer \
   --psi-run-dir artifacts/psi-model/psi0/sonic-checkpoints/multi-task.psi-dream.2609092156 \
   --ckpt-step 40000 \
-  --clip-model artifacts/clip-vit-large-patch14-336 \
+  --clip-model artifacts/clip-vit-large-patch14 \
   --sonic-bundle artifacts/sonic
 ```
 
@@ -77,7 +79,7 @@ uv run --extra cu128 --frozen python src/runtime.py \
   --num-envs 32 --num-episodes 256 \
   --psi-run-dir artifacts/psi-model/psi0/sonic-checkpoints/multi-task.psi-dream.2609092156 \
   --ckpt-step 40000 \
-  --clip-model artifacts/clip-vit-large-patch14-336 \
+  --clip-model artifacts/clip-vit-large-patch14 \
   --sonic-bundle artifacts/sonic \
   --save-metrics results/walk-to-target.json
 ```
@@ -90,10 +92,10 @@ rates, and runtime throughput. The planner action clock is 30 Hz; SONIC and
 MJLab run at 50 Hz. The checkpoint's `action_exec_horizon` determines when Ψ₀
 replans.
 
-The MJLab G1 has no actuated hands, so the Ψ₀ wrapper packs the 45-D checkpoint
-state from 29 body joint positions in SONIC order, 14 neutral hand values, and
-two zero padding values. The wrapper returns the first 64 dimensions of each
-predicted action as the SONIC body token.
+The MJLab G1 has no actuated hands or neck, so the Ψ₀ wrapper packs its 45-D
+state as 12 leg joints, three waist joints, 14 arm joints, 14 neutral hand
+values, and two neutral neck values. The wrapper returns the first 64 dimensions
+of each predicted action as the SONIC body token.
 
 The observation camera uses SONIC's G1 head-camera mount and the ZED Mini WVGA
 view used by the checkpoint data. MJLab renders the native 672×376 image; the

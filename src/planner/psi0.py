@@ -9,7 +9,6 @@ from torch import nn
 from torchvision.transforms import v2
 
 from planner._psi0 import Psi0Model
-from shared.g1 import SONIC_FROM_MJLAB
 from shared.state import RobotState
 
 
@@ -25,7 +24,6 @@ class Psi0Planner:
         inference_steps: int = 8,
     ):
         self.device = torch.device(device)
-        self.sonic_from_mjlab = torch.as_tensor(SONIC_FROM_MJLAB, device=self.device)
         self.inference_steps = inference_steps
 
         saved = json.loads((run_dir / "run_config.json").read_text())
@@ -57,7 +55,6 @@ class Psi0Planner:
             run_dir, ckpt_step, model_config, self.device
         )
         self.exec_horizon = model_config["action_exec_horizon"]
-        self.state_dim = model_config["odim"]
         self.clip_model = clip_model
         self.text_encoder = None
         cache_path = run_dir / model_config["pooled_cache_path"]
@@ -104,16 +101,9 @@ class Psi0Planner:
         self, images: torch.Tensor, states: RobotState, instructions: list[str]
     ) -> torch.Tensor:
         batch = states.joint_pos.shape[0]
-        body = states.joint_pos.index_select(-1, self.sonic_from_mjlab)
-        hands = torch.zeros((batch, 14), device=self.device)
-        planner_state = torch.cat((body, hands), dim=-1)
-        padded = torch.zeros(
-            (batch, self.state_dim),
-            device=self.device,
-            dtype=torch.float32,
-        )
-        padded[:, : planner_state.shape[1]] = planner_state
-        normalized = self._normalize_state(padded).unsqueeze(1)
+        missing_joints = states.joint_pos.new_zeros((batch, 16))
+        planner_state = torch.cat((states.joint_pos, missing_joints), dim=-1)
+        normalized = self._normalize_state(planner_state).unsqueeze(1)
         # The checkpoint's ZED Mini videos contain eight padded rows below the
         # native 672x376 image.
         images = torch.cat(
