@@ -52,7 +52,11 @@ Use the Ψ₀ SONIC, Qwen processor, CLIP, and SONIC artifacts documented in
 ```sh
 uvx hf download wsagi/SONIC-VLA-BonesSeed-V2 --repo-type dataset \
   --revision 4d84c8009ad601d24c1fe493c45b2715536b7bef \
-  --include 'meta/*' '**/episode_00004[7-9].*' '**/episode_00005[0-3].*' \
+  --include 'meta/*' \
+  --include 'data/chunk-000/episode_00004[7-9].parquet' \
+  --include 'data/chunk-000/episode_00005[0-3].parquet' \
+  --include 'videos/chunk-000/observation.images.ego_view/episode_00004[7-9].mp4' \
+  --include 'videos/chunk-000/observation.images.ego_view/episode_00005[0-3].mp4' \
   --local-dir artifacts/bones-walk
 ```
 
@@ -121,6 +125,30 @@ length, displacement, net/max heading change, and falls for each environment.
 Judge walk-and-turn behavior from these measurements and video; no reward or
 automatic success threshold is introduced. Only the first 64 predicted channels
 are sent to SONIC. Hand targets stay in BC, while rollout has no Dex3 control.
+
+## Demonstration replay
+
+Replay the demonstrated body tokens before interpreting a missing turn as a
+BC failure:
+
+```sh
+uv run --extra cu128 --frozen python src/evaluate_bc.py \
+  --replay-episode 47 --record-video results/bones-replay-47.mp4 \
+  --output results/bones-replay-47.json
+```
+
+Replay starts from the same standing MJLab reset as policy evaluation. It uses
+the raw 64-D body tokens at the source 50 Hz rate, without normalization,
+quantization, or clipping, and stops at the episode end (9.1 seconds for episode
+47). It requires only the dataset and SONIC decoder, not Ψ₀ artifacts. The JSON
+also reports the heading change recorded in the demonstration. If native replay
+works, repeat with `--replay-hz 30` and distinct output/video paths to check the
+resampling used by BC. A failed replay can reflect initial-state or simulator
+differences; it does not by itself establish a training failure.
+
+Episode 47's recorded root orientation shows approximately 0.885 rad (51°)
+maximum heading change and 0.002 rad net change. Compare replay against these
+recorded values rather than assuming the task label implies a 180° turn.
 
 ## Validation status
 

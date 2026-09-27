@@ -59,7 +59,7 @@ uvx hf download nvidia/GEAR-SONIC \
 
 uvx hf download Qwen/Qwen3-VL-2B-Instruct \
   --revision 89644892e4d85e24eaac8bacfd4f463576704203 \
-  --exclude "*.safetensors" "*.bin" \
+  --exclude "*.safetensors" --exclude "*.bin" \
   --local-dir artifacts/qwen3-vl-2b-instruct
 
 uvx hf download openai/clip-vit-large-patch14 \
