@@ -217,19 +217,28 @@ def run(
 
 
 def main() -> None:
+    psi_run_dir = Path(
+        "artifacts/psi-model/psi0/sonic-checkpoints/multi-task.psi-dream.2609092156"
+    )
+    checkpoint_step = 40000
+    qwen_model = Path("artifacts/qwen3-vl-2b-instruct")
+    clip_model = Path("artifacts/clip-vit-large-patch14")
+    sonic_bundle = Path("artifacts/sonic")
+
     parser = argparse.ArgumentParser(description="Evaluate WalkToTarget-v0")
     parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument("--num-episodes", type=int, default=1)
     parser.add_argument("--episode-seconds", type=float, default=8.0)
-    parser.add_argument("--psi-run-dir", type=Path, required=True)
-    parser.add_argument("--ckpt-step", type=int, required=True)
-    parser.add_argument("--qwen-model", type=Path, required=True)
-    parser.add_argument("--clip-model", type=Path, required=True)
-    parser.add_argument("--sonic-bundle", type=Path, required=True)
+    parser.add_argument("--psi-run-dir", type=Path, default=psi_run_dir)
+    parser.add_argument("--ckpt-step", type=int, default=checkpoint_step)
+    parser.add_argument("--qwen-model", type=Path, default=qwen_model)
+    parser.add_argument("--clip-model", type=Path, default=clip_model)
+    parser.add_argument("--sonic-bundle", type=Path, default=sonic_bundle)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--viewer", action="store_true")
     parser.add_argument("--record-video", type=Path)
     parser.add_argument("--save-metrics", type=Path)
+
     args = parser.parse_args()
     if args.num_envs < 1:
         parser.error("--num-envs must be positive")
