@@ -76,9 +76,7 @@ class WalkToTarget:
         final_distance = torch.linalg.vector_norm(
             state.root_pos_w[:, :2] - self.target_xy, dim=-1
         )
-        final_speed = torch.linalg.vector_norm(
-            state.root_lin_vel_w[:, :2], dim=-1
-        )
+        final_speed = torch.linalg.vector_norm(state.root_lin_vel_w[:, :2], dim=-1)
         return [
             {
                 "success": bool(self.success[index].item()),

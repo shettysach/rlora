@@ -18,6 +18,13 @@ dependencies = [
     "transformers==4.57.1",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest==9.0.2",
+    "ruff==0.16.8",
+    "ty==0.0.82",
+]
+
 [project.optional-dependencies]
 cpu = [
     "mjlab",
@@ -37,6 +44,9 @@ package = false
 conflicts = [
     [{ extra = "cpu" }, { extra = "cu128" }],
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
 
 [tool.uv.sources]
 mjlab = { git = "https://github.com/mujocolab/mjlab", rev = "0fb8a681136be94ffc636a3dd423cabb97d91f10" }

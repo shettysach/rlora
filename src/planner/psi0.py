@@ -19,6 +19,7 @@ class Psi0Planner:
         self,
         run_dir: Path,
         ckpt_step: int,
+        qwen_model: Path,
         clip_model: Path,
         device: str = "cuda",
         inference_steps: int = 8,
@@ -52,7 +53,7 @@ class Psi0Planner:
         )
 
         self.model = Psi0Model.from_pretrained(
-            run_dir, ckpt_step, model_config, self.device
+            run_dir, ckpt_step, model_config, qwen_model, self.device
         )
         self.horizon = model_config["action_chunk_size"]
         self.clip_model = clip_model

@@ -23,9 +23,6 @@ from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoConfig, AutoProcessor, Qwen3VLForConditionalGeneration
 from transformers.utils import is_flash_attn_2_available
 
-QWEN3VL_VARIANT = "Qwen/Qwen3-VL-2B-Instruct"
-QWEN3VL_REVISION = "89644892e4d85e24eaac8bacfd4f463576704203"
-
 
 class PositionalEncoding(nn.Module):
     def __init__(self, dimension: int, max_length: int = 5000) -> None:
@@ -301,15 +298,14 @@ class Psi0Model(nn.Module):
         run_dir: Path,
         checkpoint_step: int,
         model_config: dict,
+        qwen_model: Path,
         device: torch.device,
     ) -> Psi0Model:
         checkpoint = (
             run_dir / "checkpoints" / f"ckpt_{checkpoint_step}" / "model.safetensors"
         )
 
-        vlm_config = AutoConfig.from_pretrained(
-            QWEN3VL_VARIANT, revision=QWEN3VL_REVISION
-        )
+        vlm_config = AutoConfig.from_pretrained(qwen_model, local_files_only=True)
         vlm_config._attn_implementation = (
             "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
         )
@@ -359,9 +355,7 @@ class Psi0Model(nn.Module):
         del action_state
         action_header.to(device, dtype=torch.bfloat16).eval().requires_grad_(False)
 
-        processor = AutoProcessor.from_pretrained(
-            QWEN3VL_VARIANT, revision=QWEN3VL_REVISION
-        )
+        processor = AutoProcessor.from_pretrained(qwen_model, local_files_only=True)
         scheduler = FlowMatchEulerDiscreteScheduler(
             num_train_timesteps=model_config["train_diffusion_steps"]
         )

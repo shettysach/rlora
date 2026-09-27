@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -21,11 +20,13 @@ RTC_INITIAL_DELAY = 6
 
 
 def run(
+    *,
     num_envs: int,
     num_episodes: int,
     episode_seconds: float,
     psi_run_dir: Path,
     ckpt_step: int,
+    qwen_model: Path,
     clip_model: Path,
     sonic_bundle: Path,
     device: str = "cuda",
@@ -40,8 +41,9 @@ def run(
     ):
         if not path.is_file():
             raise FileNotFoundError(f"Required model artifact is missing: {path}")
-    if not clip_model.is_dir():
-        raise FileNotFoundError(f"Required model artifact is missing: {clip_model}")
+    for path in (qwen_model, clip_model):
+        if not path.is_dir():
+            raise FileNotFoundError(f"Required model artifact is missing: {path}")
 
     env = MjlabEnv(num_envs, device=device, record_video=record_video)
     viewer = None
@@ -51,7 +53,9 @@ def run(
     if env.cuda_stream is not None:
         torch.cuda.set_stream(env.cuda_stream)
     try:
-        planner = Psi0Planner(psi_run_dir, ckpt_step, clip_model, device=device)
+        planner = Psi0Planner(
+            psi_run_dir, ckpt_step, qwen_model, clip_model, device=device
+        )
         controller = SonicPolicy(
             sonic_bundle, num_envs, device=device, cuda_stream=env.cuda_stream
         )
@@ -65,22 +69,34 @@ def run(
         episodes: list[dict] = []
         control_steps = 0
         gpu_used_peak = 0
+        instructions = [INSTRUCTION] * num_envs
+        if device.startswith("cuda"):
+            torch.cuda.reset_peak_memory_stats()
         wall_start = time.perf_counter()
 
-        def sync() -> None:
+        def sync_sim() -> None:
             if env.cuda_stream is not None:
                 env.cuda_stream.synchronize()
 
         def sample_gpu_usage() -> None:
             nonlocal gpu_used_peak
             if device.startswith("cuda"):
-                free, total = torch.cuda.mem_get_info()
+                free, total = torch.cuda.mem_get_info(device)
                 gpu_used_peak = max(gpu_used_peak, total - free)
 
-        num_batches = math.ceil(num_episodes / num_envs)
+        def replan(
+            images: torch.Tensor,
+            joints: torch.Tensor,
+            executed: int,
+            delay: int,
+        ) -> tuple[torch.Tensor, float]:
+            started = time.perf_counter()
+            result = planner.predict(images, joints, instructions, executed, delay)
+            return result, time.perf_counter() - started
+
         rtc_deadline_misses = 0
         with ThreadPoolExecutor(max_workers=1) as executor:
-            for batch in range(num_batches):
+            for batch_start in range(0, num_episodes, num_envs):
                 env.reset()
                 controller.reset()
                 planner.reset()
@@ -89,34 +105,18 @@ def run(
                 elapsed = 0.0
                 inference_delays = deque([RTC_INITIAL_DELAY], maxlen=6)
 
-                sync()
+                sync_sim()
                 before = time.perf_counter()
                 reference = planner.predict(
                     env.rgb().cpu(),
                     state.joint_pos.cpu(),
-                    [INSTRUCTION] * num_envs,
+                    instructions,
                 )
                 planner_times.append(time.perf_counter() - before)
                 sample_gpu_usage()
                 action_cursor = 0.0
                 replan_cursor = 0
                 pending: Future[tuple[torch.Tensor, float]] | None = None
-
-                def replan(
-                    images: torch.Tensor,
-                    joints: torch.Tensor,
-                    executed: int,
-                    delay: int,
-                ) -> tuple[torch.Tensor, float]:
-                    started = time.perf_counter()
-                    result = planner.predict(
-                        images,
-                        joints,
-                        [INSTRUCTION] * num_envs,
-                        executed,
-                        delay,
-                    )
-                    return result, time.perf_counter() - started
 
                 while elapsed < episode_seconds:
                     if pending is not None and (
@@ -132,42 +132,47 @@ def run(
                         pending = None
                         sample_gpu_usage()
 
-                    if pending is None and action_cursor >= RTC_REPLAN_AFTER:
-                        sync()
+                    chunk_seconds_left = (planner.horizon - action_cursor) / PLANNER_HZ
+                    if (
+                        pending is None
+                        and action_cursor >= RTC_REPLAN_AFTER
+                        and elapsed + chunk_seconds_left < episode_seconds
+                    ):
+                        sync_sim()
                         replan_cursor = int(action_cursor)
+                        state = env.robot_state()
                         pending = executor.submit(
                             replan,
                             env.rgb().cpu(),
-                            env.robot_state().joint_pos.cpu(),
+                            state.joint_pos.cpu(),
                             replan_cursor,
                             max(inference_delays),
                         )
 
                     action_idx = min(int(action_cursor), planner.horizon - 1)
-                    sync()
+                    sync_sim()
                     before = time.perf_counter()
+                    state = env.robot_state()
                     joints = controller.act(
                         reference=reference[:, action_idx],
-                        robot_state=env.robot_state(),
+                        robot_state=state,
                     )
-                    sync()
+                    sync_sim()
                     sonic_times.append(time.perf_counter() - before)
                     env.step(joints)
                     if viewer is not None:
                         viewer.sync()
 
-                    task.update(env.robot_state(), elapsed, env.step_dt)
+                    state = env.robot_state()
+                    task.update(state, elapsed, env.step_dt)
                     control_steps += 1
                     elapsed += env.step_dt
                     action_cursor += PLANNER_HZ * env.step_dt
 
-                if pending is not None:
-                    pending.result()
-
-                active = min(num_envs, num_episodes - batch * num_envs)
+                active = min(num_envs, num_episodes - batch_start)
                 episodes.extend(task.results(env.robot_state(), active))
 
-        sync()
+        sync_sim()
         wall_seconds = time.perf_counter() - wall_start
         success_count = sum(episode["success"] for episode in episodes)
         fall_count = sum(episode["fell"] for episode in episodes)
@@ -195,7 +200,7 @@ def run(
             "rtc_deadline_misses": rtc_deadline_misses,
             "sonic_latency_ms": 1000 * sum(sonic_times) / len(sonic_times),
             "control_steps_per_s": num_envs * control_steps / wall_seconds,
-            "torch_peak_allocated_bytes": torch.cuda.max_memory_allocated()
+            "torch_peak_allocated_bytes": torch.cuda.max_memory_allocated(device)
             if device.startswith("cuda")
             else None,
             "gpu_used_bytes_sampled_peak": gpu_used_peak
@@ -218,6 +223,7 @@ def main() -> None:
     parser.add_argument("--episode-seconds", type=float, default=8.0)
     parser.add_argument("--psi-run-dir", type=Path, required=True)
     parser.add_argument("--ckpt-step", type=int, required=True)
+    parser.add_argument("--qwen-model", type=Path, required=True)
     parser.add_argument("--clip-model", type=Path, required=True)
     parser.add_argument("--sonic-bundle", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
@@ -233,16 +239,17 @@ def main() -> None:
         parser.error("--episode-seconds must be positive")
 
     result = run(
-        args.num_envs,
-        args.num_episodes,
-        args.episode_seconds,
-        args.psi_run_dir,
-        args.ckpt_step,
-        args.clip_model,
-        args.sonic_bundle,
-        args.device,
-        args.viewer,
-        args.record_video,
+        num_envs=args.num_envs,
+        num_episodes=args.num_episodes,
+        episode_seconds=args.episode_seconds,
+        psi_run_dir=args.psi_run_dir,
+        ckpt_step=args.ckpt_step,
+        qwen_model=args.qwen_model,
+        clip_model=args.clip_model,
+        sonic_bundle=args.sonic_bundle,
+        device=args.device,
+        viewer_enabled=args.viewer,
+        record_video=args.record_video,
     )
     output = json.dumps(result, indent=2)
     print(output)

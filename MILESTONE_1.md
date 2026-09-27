@@ -152,8 +152,7 @@ class Psi0Planner:
         images,
         states,
         instructions,
-    ):
-        ...
+    ): ...
 ```
 
 Expected conceptual contract:

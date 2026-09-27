@@ -15,16 +15,17 @@ The checkpoint-compatible Ψ₀ inference implementation is vendored under
 `src/planner/_psi0` from physical-superintelligence-lab/Psi0 commit
 `4f3720d45e102b36d7c3e9465ab8062274170518`. The local project owns its full
 Python dependency graph and does not require a Psi0 checkout or a second
-environment. Uncached instructions use a CLIP model downloaded as a pinned,
-local artifact.
+environment. Qwen's processor files and the CLIP text encoder are downloaded
+as pinned local artifacts; the runtime does not fetch model files.
 
 ## Install
 
 Install the pinned interpreter with `uv python install 3.12.13`. For local CPU
 development, run `uv sync --extra cpu --frozen`. On a CUDA 12.8 machine, run
 `uv sync --extra cu128 --frozen`. The extras are mutually
-exclusive. To run the example on CPU, use `uv run --extra cpu --frozen` and
-pass `--device cpu`.
+exclusive. Ruff, ty, and pytest are pinned in the development dependency group.
+To run the example on CPU, use `uv run --extra cpu --frozen` and pass
+`--device cpu`.
 
 On the remote RTX 5090, confirm that Torch and ONNX Runtime see CUDA before
 downloading the model artifacts:
@@ -50,6 +51,11 @@ uvx hf download nvidia/GEAR-SONIC \
   --include model_decoder.onnx \
   --local-dir artifacts/sonic
 
+uvx hf download Qwen/Qwen3-VL-2B-Instruct \
+  --revision 89644892e4d85e24eaac8bacfd4f463576704203 \
+  --exclude "*.safetensors" "*.bin" \
+  --local-dir artifacts/qwen3-vl-2b-instruct
+
 uvx hf download openai/clip-vit-large-patch14 \
   config.json merges.txt model.safetensors special_tokens_map.json \
   tokenizer.json tokenizer_config.json vocab.json \
@@ -64,6 +70,7 @@ uv run --extra cu128 --frozen python src/runtime.py \
   --num-envs 1 --num-episodes 1 --viewer \
   --psi-run-dir artifacts/psi-model/psi0/sonic-checkpoints/multi-task.psi-dream.2609092156 \
   --ckpt-step 40000 \
+  --qwen-model artifacts/qwen3-vl-2b-instruct \
   --clip-model artifacts/clip-vit-large-patch14 \
   --sonic-bundle artifacts/sonic
 ```
@@ -79,6 +86,7 @@ uv run --extra cu128 --frozen python src/runtime.py \
   --num-envs 32 --num-episodes 256 \
   --psi-run-dir artifacts/psi-model/psi0/sonic-checkpoints/multi-task.psi-dream.2609092156 \
   --ckpt-step 40000 \
+  --qwen-model artifacts/qwen3-vl-2b-instruct \
   --clip-model artifacts/clip-vit-large-patch14 \
   --sonic-bundle artifacts/sonic \
   --save-metrics results/walk-to-target.json

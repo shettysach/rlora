@@ -44,8 +44,6 @@ def _add_goal(spec: MjSpec) -> None:
 
 
 def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
-    if num_envs < 1:
-        raise ValueError("num_envs must be positive")
     g1_actuator_7520_14 = replace(
         G1_ACTUATOR_7520_14,
         target_names_expr=(".*_hip_yaw_joint", "waist_yaw_joint"),
