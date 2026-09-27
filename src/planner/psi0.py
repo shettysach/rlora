@@ -124,4 +124,4 @@ class Psi0Planner:
         low = self.action_min[:64]
         high = self.action_max[:64]
         body_token = 0.5 * (actions[..., :64] + 1) * (high - low) + low
-        return body_token.mul(16).round().clamp(-16, 15).div(16)
+        return body_token.clamp(-0.625, 0.625).mul(16).round().div(16)

@@ -96,7 +96,7 @@ The MJLab G1 has no actuated hands or neck, so the Ψ₀ wrapper packs its 45-D
 state as 12 leg joints, three waist joints, 14 arm joints, 14 neutral hand
 values, and two neutral neck values. The wrapper returns the first 64 dimensions
 of each predicted action, snapped to SONIC's 1/16 finite scalar quantization
-grid, as the body token.
+grid in the controller's [-0.625, 0.625] token range, as the body token.
 
 The observation camera uses SONIC's G1 head-camera mount and the ZED Mini WVGA
 view used by the checkpoint data. MJLab renders the native 672×376 image; the
