@@ -1,139 +1,91 @@
-# Device agent: finish BONES walk-and-turn BC validation
+# Device agent: finish the BONES BC pipeline check
 
-Work from the `rlora` repository on `balerion` (`~/Desktop/rlora`). Treat this
-document as authorization to run the remaining experiments, inspect artifacts,
-fix local code, and iterate without asking the user for each command. Read
-`AGENTS.md`, `AIM.md`, and `BC_BONES.md` first. Keep the implementation small
-and auditable. Preserve existing result directories; use new names for new
-runs. Report a real blocker only after investigating it. Do not claim success
-from a single low loss or from upright walking alone.
+Work in `~/Desktop/rlora` on balerion. Read `AGENTS.md`, `AIM.md`, and
+`BC_BONES.md` first. This document authorizes the remaining read-only
+evaluation and small, focused diagnostic work. Preserve existing artifacts;
+write new results under distinct names. The BONES task is a bounded check of
+the local Ψ₀ BC pipeline, not a project to perfect this one motion.
 
-## Objective and boundaries
+## Current evidence
 
-Show that the released SONIC-compatible Ψ₀ checkpoint, after local flow-based
-BC on BONES demonstrations, generates **body tokens** that execute the walking
-and turning motion better through SONIC + MJLab than the original checkpoint.
-Use the same local Ψ₀ policy for training and inference. Keep the base frozen
-and train only its LoRA adapter. Keep all 78 demonstrated action dimensions
-(64 body + 14 Dex3) in BC; the last two 80-D checkpoint channels are masked.
-Dex3 is not controlled by this MJLab rollout, so hand clipping is a diagnostic,
-not a reason to change hand targets, mask them, or delay the body experiment.
-No RL, box pushing, distributed trainer, or generic framework.
+- Direct replay of episode 47 body tokens through SONIC/MJLab works at both
+  50 Hz and the policy's 30 Hz clock. The 30 Hz replay traveled 5.39 m and
+  reached 0.89 rad maximum heading change without falling. The recorded
+  motion returns near its initial heading; it is not a 180° turn.
+- The 1,000-step episode-47 adapter improved paired body flow loss from 15.59
+  to 2.93 and sampled body-token error from 0.133 to 0.089 on its training
+  episode. In two matched 9.1-second rollouts it traveled 1.41 and 1.06 m,
+  versus 0.64 and 0.63 m for the base. Its maximum heading changes were
+  0.45 and 0.42 rad, versus 0.24 and 0.12 rad. None fell. The improvement is
+  visible but remains far short of expert replay.
+- A separate run trained on episodes 47–51 with 52–53 held out and was stopped
+  at step 1,149. Its step-1,000 checkpoint exists on balerion. Its held-out
+  and physical results have **not** been verified. Locate that checkpoint
+  from the actual run directory; do not assume a path from this document.
+- The current MJLab observation differs visibly from the BONES camera view.
+  Its contribution to the rollout gap is unknown. Shared simulator changes
+  were reverted.
+- About 32.4% of episode-47 Dex3 targets exceed the starting checkpoint's
+  hand bounds, versus 0.31% of body-token values. Dex3 is not controlled in
+  these rollouts. Keep the 78 real demonstrated targets in BC and leave the
+  hand mapping alone for this pipeline check.
 
-The dataset and checkpoint are configured in `configs/bc_bones_walk.json`.
-The dataset is `wsagi/SONIC-VLA-BonesSeed-V2` at revision
-`4d84c8009ad601d24c1fe493c45b2715536b7bef`. Episode 47 is the initial
-one-episode overfit target. Episodes 47–51 train and 52–53 validate only after
-the one-episode result works. The original Ψ₀ repository at commit
-`4f3720d45e102b36d7c3e9465ab8062274170518` is a reference, never a
-runtime dependency.
+## Next work, in order
 
-## Established results
+1. Inspect `git status`, the split config, saved step-1,000 adapter, available
+   paired evaluator, and existing result files on balerion. Confirm that the
+   split is **47–51 train / 52–53 held out**, with no frame-level leakage.
+   Record the exact code revision, checkpoint path, config, and evaluation
+   settings used. Use the existing Ψ₀ policy and checkpoint loader.
 
-The released checkpoint loaded on balerion and returned finite `[1, 30, 80]`
-actions. The existing `results/bones-overfit/ckpt_500` adapter reloads and
-returns finite actions, but its random training losses fluctuate; that does
-not establish overfitting. Its 10-second closed-loop rollout traveled 1.51 m,
-displaced 0.92 m, reached 0.414 rad maximum heading change, and did not fall.
+2. Run paired offline evaluation of the **base and split adapter** on all
+   held-out observations, with the same images, states, prompt, flow
+   timesteps, noise, and sampling seeds for each pair. Report body `0:64`
+   flow loss and sampled body-token error separately from Dex3 `64:78`.
+   Inspect per-episode results for both episodes 52 and 53, not just a pooled
+   average. A one-sample `--baseline-only` output is insufficient. Also
+   compare train-split results so a good training score cannot be mistaken
+   for held-out learning. Save a machine-readable summary.
 
-The source episode is **not a 180° turnaround**. Its recorded root orientation
-reaches 0.885 rad (51°) maximum heading change and returns close to the
-starting heading. Direct replay of its 64-D tokens through SONIC/MJLab worked:
+3. If held-out body results improve credibly, run matched 9.1-second
+   closed-loop base/adapter rollouts with the same initial conditions, seed,
+   Ψ₀ sampling settings, 30 Hz action clock, SONIC controller, and MJLab
+   scene. Use at least two seeds or starting conditions. Save video and JSON
+   for every pair. Compare path length, heading trajectory and maximum turn,
+   falls, and visual motion. The previous episode-47 comparisons and expert
+   replay are context, not a target threshold that the split adapter must
+   reach. Do not use a changed scene for only one side of a comparison.
 
-| Replay | Path length | Displacement | Maximum turn | Fell |
-| --- | ---: | ---: | ---: | --- |
-| Source 50 Hz, 9.1 s | 5.404 m | 5.211 m | 0.908 rad | No |
-| BC clock 30 Hz, 9.1 s | 5.395 m | 5.203 m | 0.889 rad | No |
+4. Make one decision from the evidence:
 
-Thus the SONIC interface, MJLab simulation, source tokens, and 50→30 Hz
-resampling can execute the recorded motion. There is a substantial gap between
-the BC policy and demonstrated execution. The 1.51 m BC rollout used 10 s;
-compare future rollouts at the same 9.1 s duration and initial conditions.
+   - If the split adapter improves held-out body behavior **and** produces
+     recognizable, more reliable walk-and-turn motion than the base, mark
+     the BONES BC pipeline validated. Stop BONES training and report what
+     remains imperfect. The next research step is pushing demonstrations.
+   - If held-out body behavior does not improve, report that the split has
+     not generalized. Check one concrete suspect supported by the data,
+     such as chunk alignment, normalization, or the split episode contents.
+   - If held-out scores improve but motion remains weak, inspect the
+     closed-loop inputs and sampling path first. Save representative BONES
+     and MJLab images **after the existing Ψ₀ image transform** and compare
+     framing/content. A controlled camera/scene comparison may follow, but
+     preserve Ψ₀ checkpoint preprocessing, action semantics, and inference
+     settings. Keep scene edits local to the experiment and compare base and
+     adapter under identical conditions.
 
-The episode-47 preprocessing reported 0.31% of body-token values and 32.4% of
-hand values outside the **checkpoint** action bounds. Several left Dex3
-joints appear to have a different sign convention. Keep this visible, but
-focus first on the body path. Do not silently widen bounds or alter the hand
-mapping. The first BC sample had a base flow loss of 1.13 and an adapter flow
-loss of 0.60; those are different random flow draws and cannot be compared.
+   Investigate only one supported cause before deciding whether another
+   bounded run is justified. Do not spend GPU time merely to chase the
+   expert's 5.39 m trajectory or the task label's implied turnaround.
 
-## Work to do, in order
+## Report back
 
-1. Inspect `git status`, existing results, and the current `train_bc.py`,
-   `evaluate_bc.py`, `planner/psi0.py`, and `data/sonic_bones.py` before
-   changing anything. Confirm the source episode, checkpoint, 30 Hz clock,
-   image transform, 45-D state order, 80-D target order, and SONIC token
-   quantization. Use the pinned upstream code to resolve any mismatch.
+Provide the checkpoint and result paths, held-out body metrics for episodes
+52 and 53, matched base/adapter rollout metrics and videos, the decision
+above, and one specific next action. State separately what is measured and
+what remains a hypothesis. Do not call upright walking alone a success.
 
-2. Measure **paired offline flow loss across all 273 resampled observations**
-   of episode 47 for the original checkpoint and `ckpt_500`. Use identical
-   images, states, prompts, timesteps, and noise for each pair. Set both
-   policies to evaluation mode. Report per-sample and aggregate loss for
-   body channels `0:64` and Dex3 channels `64:78` separately, respecting the
-   existing mask and upstream time-sum loss reduction. Include more than one
-   fixed flow draw per observation if needed to reduce noise. A one-sample
-   `--baseline-only` run is insufficient. If a small reusable evaluator is
-   needed, put it under `src/` and save JSON results in a new `results/`
-   directory. Do not turn this into a generic evaluation framework.
-
-3. Inspect the produced body tokens as well as loss. On fixed observations,
-   compare base and adapter sampled chunks with the expert chunk using the
-   same inference seed. Check shape, finite values, action normalization,
-   token ranges, quantization, and whether the sampled tokens vary over the
-   motion. Do not interpret one stochastic sample as a conclusive metric.
-
-4. If the adapter has not learned the body targets, diagnose the specific
-   cause before adding training steps: action/state layout, image/prompt
-   pairing, 50→30 Hz chunk alignment, flow noise and target, masked loss,
-   state dropout, LoRA coverage/gradients, parameter updates, and adapter
-   loading. Compare local computations with the pinned Ψ₀ source where
-   useful. Make the smallest justified fix and run focused checks for it.
-   If the path is correct and training is simply insufficient, try a bounded
-   one-episode run with adjusted step budget or learning rate in a copied
-   config. Log why each change is made and retain the existing run.
-
-5. When offline body learning is credible, run matched 9.1-second physical
-   rollouts of the base and the candidate adapter, with the same seed,
-   reset, action rate, controller, and simulation settings. Record metrics
-   **and video**. Compare path length and heading trajectory against the
-   30 Hz expert replay, not against an assumed 180° turn. If physical motion
-   still fails despite good offline loss, investigate sampling, normalization,
-   replan/chunk behavior, and closed-loop observation mismatch. Fix and
-   repeat as needed. Use more than one seed or starting condition when a
-   candidate appears successful so the result is not a one-off.
-
-6. Only after episode 47 demonstrates clear physical improvement, copy the
-   config for the episode-level 5/2 split (47–51 train, 52–53 held out),
-   train, evaluate paired offline losses on both splits, and compare matched
-   closed-loop rollouts with the base. Keep split episodes disjoint. The
-   final claim should be about recognizable and more reliable execution,
-   supported by videos and metrics; note the limits of a small dataset.
-
-Useful commands (change output paths to avoid collisions):
-
-```sh
-uv run --extra cu128 --frozen python src/evaluate_bc.py \
-  --seconds 9.1 --record-video results/base-9p1.mp4 \
-  --output results/base-9p1.json
-
-uv run --extra cu128 --frozen python src/evaluate_bc.py \
-  --seconds 9.1 --bc-checkpoint results/bones-overfit/ckpt_500 \
-  --record-video results/bc-500-9p1.mp4 \
-  --output results/bc-500-9p1.json
-```
-
-Use `uv run --extra cu128 --frozen` for device commands. The existing default
-config has one train episode and no validation episode. BC checkpoint folders
-contain `adapter.safetensors` and `bc_config.json`; the base Ψ₀ artifacts are
-still required to load an adapter. Training output directories must be new.
-
-## What to deliver
-
-Finish the experiment as far as the machine and artifacts permit. Leave the
-repository clean and readable, with any small fixes and useful metrics saved.
-Summarize: paired base/adapter body and hand losses, physical base/adapter
-comparison to the expert replay, videos/results paths, changes made, focused
-checks, and the remaining limitation or blocker. State clearly if the 5/2
-phase has not earned a run because one-episode BC still fails. Do the next
-diagnostic or repair yourself when the evidence identifies it; do not hand the
-user another isolated command after each result.
+Use `uv run --extra cu128 --frozen` for commands on balerion. Existing
+`src/train_bc.py --baseline-only` checks one sample and reports a validation
+loss, while the paired evaluator on the device should be used for the full
+split comparison. Read each command's `--help` before choosing options; do
+not invent flag names from older documentation.
