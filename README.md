@@ -89,8 +89,11 @@ reward is progress, with a +5 success bonus and a -5 fall penalty. Success
 requires the upright robot to remain within 0.2 m of the target below 0.2 m/s
 for 0.5 s. The JSON contains per-episode outcomes, aggregate success and fall
 rates, and runtime throughput. The planner action clock is 30 Hz; SONIC and
-MJLab run at 50 Hz. The checkpoint's `action_exec_horizon` determines when Ψ₀
-replans.
+MJLab run at 50 Hz. After executing 15 of a chunk's 30 actions, Ψ₀ generates
+the next chunk on a separate CUDA stream while simulation continues. Test-time
+RTC guides the new chunk toward the shifted previous chunk. The
+`rtc_deadline_misses` metric counts replans that did not finish before the
+current chunk expired.
 
 The MJLab G1 has no actuated hands or neck, so the Ψ₀ wrapper packs its 45-D
 state as 12 leg joints, three waist joints, 14 arm joints, 14 neutral hand

@@ -336,7 +336,7 @@ class Psi0Model(nn.Module):
         vlm.load_state_dict(vlm_state, strict=True)
         del vlm_state
         nn.Module.to(vlm, device)
-        vlm.eval()
+        vlm.eval().requires_grad_(False)
 
         action_header = ActionTransformerModel(
             action_dim=model_config["action_dim"],
@@ -357,7 +357,7 @@ class Psi0Model(nn.Module):
             }
         action_header.load_state_dict(action_state, strict=True)
         del action_state
-        action_header.to(device, dtype=torch.bfloat16).eval()
+        action_header.to(device, dtype=torch.bfloat16).eval().requires_grad_(False)
 
         processor = AutoProcessor.from_pretrained(
             QWEN3VL_VARIANT, revision=QWEN3VL_REVISION
@@ -385,15 +385,13 @@ class Psi0Model(nn.Module):
         mask = torch.arange(padded.shape[1])[None] < lengths[:, None]
         return padded.to(self.device), mask.to(self.device)
 
-    @torch.inference_mode()
-    def predict_action(
+    @torch.no_grad()
+    def _conditioning(
         self,
         observations: list[list[Image.Image]],
         states: torch.Tensor,
         instructions: list[str],
-        num_inference_steps: int,
-        pooled_projections: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         input_ids = []
         pixel_values = []
         image_grids = []
@@ -423,8 +421,6 @@ class Psi0Model(nn.Module):
         pixels = torch.cat(pixel_values).to(self.device)
         grids = torch.cat(image_grids).to(self.device)
         states = states.to(self.device)
-        pooled_projections = pooled_projections.to(self.device)
-
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             output = self.vlm(
                 input_ids=token_ids,
@@ -437,6 +433,40 @@ class Psi0Model(nn.Module):
             views = torch.stack(
                 [output.hidden_states[index] for index in self.vlm_layer_indices], dim=1
             )
+        return views, states, attention_mask
+
+    @torch.no_grad()
+    def predict_action(
+        self,
+        observations: list[list[Image.Image]],
+        states: torch.Tensor,
+        instructions: list[str],
+        num_inference_steps: int,
+        pooled_projections: torch.Tensor,
+        previous_actions: torch.Tensor | None = None,
+        inference_delay: int = 0,
+        execution_horizon: int = 0,
+    ) -> torch.Tensor:
+        views, states, attention_mask = self._conditioning(
+            observations, states, instructions
+        )
+        pooled_projections = pooled_projections.to(self.device)
+        mask = None
+        if previous_actions is not None:
+            delay = min(inference_delay, self.horizon // 2)
+            execution = max(delay, min(execution_horizon, self.horizon - delay))
+            overlap_end = self.horizon - execution
+            mask = torch.zeros(self.horizon, device=self.device)
+            mask[:delay] = 1
+            if delay < overlap_end:
+                indices = torch.arange(
+                    delay, overlap_end, device=self.device, dtype=torch.float32
+                )
+                weights = (overlap_end - indices) / (overlap_end - delay + 1)
+                mask[delay:overlap_end] = weights * (weights.exp() - 1) / (math.e - 1)
+            previous_actions = previous_actions.to(self.device)
+
+        with torch.autocast(self.device.type, dtype=torch.bfloat16):
             action = torch.randn(
                 states.shape[0],
                 self.horizon,
@@ -447,14 +477,55 @@ class Psi0Model(nn.Module):
             timesteps = cast(torch.Tensor, self.scheduler.timesteps)
             for timestep in timesteps:
                 batch_timestep = timestep.expand(states.shape[0])
-                prediction = self.action_header(
-                    action,
-                    views,
-                    states,
-                    batch_timestep,
-                    pooled_projections,
-                    attention_mask,
-                )
+                if previous_actions is None:
+                    prediction = self.action_header(
+                        action,
+                        views,
+                        states,
+                        batch_timestep,
+                        pooled_projections,
+                        attention_mask,
+                    )
+                else:
+                    rtc_mask = cast(torch.Tensor, mask)
+                    sigmas = cast(torch.Tensor, self.scheduler.sigmas)
+                    with torch.enable_grad():
+                        action_for_guidance = action.detach().requires_grad_(True)
+                        prediction = self.action_header(
+                            action_for_guidance,
+                            views,
+                            states,
+                            batch_timestep,
+                            pooled_projections,
+                            attention_mask,
+                        )
+                        sigma = sigmas[self.scheduler.index_for_timestep(timestep)]
+                        predicted_clean = action_for_guidance - sigma * prediction
+                        error = (
+                            previous_actions - predicted_clean.detach()
+                        ) * rtc_mask[None, :, None]
+                        correction = torch.autograd.grad(
+                            predicted_clean,
+                            action_for_guidance,
+                            grad_outputs=error,
+                        )[0]
+                    correction_norm = torch.linalg.vector_norm(
+                        correction.float(), dim=(1, 2), keepdim=True
+                    )
+                    error_norm = torch.linalg.vector_norm(
+                        error.float(), dim=(1, 2), keepdim=True
+                    )
+                    scale = (
+                        0.9
+                        * error_norm
+                        / (sigma.clamp_min(1e-8) * correction_norm.clamp_min(1e-8))
+                    )
+                    correction = torch.where(
+                        (sigma < 1) & (correction_norm >= 1e-8),
+                        scale * correction,
+                        torch.zeros_like(correction),
+                    )
+                    prediction = prediction.detach() - correction
                 step = cast(
                     FlowMatchEulerDiscreteSchedulerOutput,
                     self.scheduler.step(

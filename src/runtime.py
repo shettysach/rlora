@@ -4,6 +4,8 @@ import argparse
 import json
 import math
 import time
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import torch
@@ -14,6 +16,8 @@ from sim.env import MjlabEnv
 from walk_to_target import INSTRUCTION, TASK_NAME, WalkToTarget
 
 PLANNER_HZ = 30.0
+RTC_REPLAN_AFTER = 15
+RTC_INITIAL_DELAY = 6
 
 
 def run(
@@ -64,8 +68,8 @@ def run(
         wall_start = time.perf_counter()
 
         def sync() -> None:
-            if device.startswith("cuda"):
-                torch.cuda.synchronize()
+            if env.cuda_stream is not None:
+                env.cuda_stream.synchronize()
 
         def sample_gpu_usage() -> None:
             nonlocal gpu_used_peak
@@ -74,31 +78,72 @@ def run(
                 gpu_used_peak = max(gpu_used_peak, total - free)
 
         num_batches = math.ceil(num_episodes / num_envs)
-        for batch in range(num_batches):
-            env.reset()
-            controller.reset()
-            state = env.robot_state()
-            task = WalkToTarget.start(state, episode_seconds)
-            elapsed = 0.0
+        rtc_deadline_misses = 0
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            for batch in range(num_batches):
+                env.reset()
+                controller.reset()
+                planner.reset()
+                state = env.robot_state()
+                task = WalkToTarget.start(state, episode_seconds)
+                elapsed = 0.0
+                inference_delays = deque([RTC_INITIAL_DELAY], maxlen=6)
 
-            while elapsed < episode_seconds:
-                images, state = env.rgb(), env.robot_state()
                 sync()
                 before = time.perf_counter()
                 reference = planner.predict(
-                    images, state, [INSTRUCTION] * num_envs
+                    env.rgb().cpu(),
+                    state.joint_pos.cpu(),
+                    [INSTRUCTION] * num_envs,
                 )
-                sync()
                 planner_times.append(time.perf_counter() - before)
                 sample_gpu_usage()
+                action_cursor = 0.0
+                replan_cursor = 0
+                pending: Future[tuple[torch.Tensor, float]] | None = None
 
-                chunk_elapsed = 0.0
-                chunk_duration = min(
-                    planner.exec_horizon / PLANNER_HZ,
-                    episode_seconds - elapsed,
-                )
-                while chunk_elapsed < chunk_duration:
-                    action_idx = int(chunk_elapsed * PLANNER_HZ)
+                def replan(
+                    images: torch.Tensor,
+                    joints: torch.Tensor,
+                    executed: int,
+                    delay: int,
+                ) -> tuple[torch.Tensor, float]:
+                    started = time.perf_counter()
+                    result = planner.predict(
+                        images,
+                        joints,
+                        [INSTRUCTION] * num_envs,
+                        executed,
+                        delay,
+                    )
+                    return result, time.perf_counter() - started
+
+                while elapsed < episode_seconds:
+                    if pending is not None and (
+                        pending.done() or action_cursor >= planner.horizon
+                    ):
+                        if not pending.done():
+                            rtc_deadline_misses += 1
+                        reference, latency = pending.result()
+                        planner_times.append(latency)
+                        delay = int(action_cursor) - replan_cursor
+                        inference_delays.append(delay)
+                        action_cursor = float(delay)
+                        pending = None
+                        sample_gpu_usage()
+
+                    if pending is None and action_cursor >= RTC_REPLAN_AFTER:
+                        sync()
+                        replan_cursor = int(action_cursor)
+                        pending = executor.submit(
+                            replan,
+                            env.rgb().cpu(),
+                            env.robot_state().joint_pos.cpu(),
+                            replan_cursor,
+                            max(inference_delays),
+                        )
+
+                    action_idx = min(int(action_cursor), planner.horizon - 1)
                     sync()
                     before = time.perf_counter()
                     joints = controller.act(
@@ -114,11 +159,13 @@ def run(
                     task.update(env.robot_state(), elapsed, env.step_dt)
                     control_steps += 1
                     elapsed += env.step_dt
-                    chunk_elapsed += env.step_dt
-                sample_gpu_usage()
+                    action_cursor += PLANNER_HZ * env.step_dt
 
-            active = min(num_envs, num_episodes - batch * num_envs)
-            episodes.extend(task.results(env.robot_state(), active))
+                if pending is not None:
+                    pending.result()
+
+                active = min(num_envs, num_episodes - batch * num_envs)
+                episodes.extend(task.results(env.robot_state(), active))
 
         sync()
         wall_seconds = time.perf_counter() - wall_start
@@ -145,6 +192,7 @@ def run(
             "planner_throughput_envs_per_s": num_envs
             * len(planner_times)
             / sum(planner_times),
+            "rtc_deadline_misses": rtc_deadline_misses,
             "sonic_latency_ms": 1000 * sum(sonic_times) / len(sonic_times),
             "control_steps_per_s": num_envs * control_steps / wall_seconds,
             "torch_peak_allocated_bytes": torch.cuda.max_memory_allocated()

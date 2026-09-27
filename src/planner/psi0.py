@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -9,7 +10,6 @@ from torch import nn
 from torchvision.transforms import v2
 
 from planner._psi0 import Psi0Model
-from shared.state import RobotState
 
 
 class Psi0Planner:
@@ -54,7 +54,7 @@ class Psi0Planner:
         self.model = Psi0Model.from_pretrained(
             run_dir, ckpt_step, model_config, self.device
         )
-        self.exec_horizon = model_config["action_exec_horizon"]
+        self.horizon = model_config["action_chunk_size"]
         self.clip_model = clip_model
         self.text_encoder = None
         cache_path = run_dir / model_config["pooled_cache_path"]
@@ -62,6 +62,17 @@ class Psi0Planner:
         self.pooled = {
             key.lower(): value.to(self.device) for key, value in cache.items()
         }
+        self.stream = (
+            torch.cuda.Stream(device=self.device)
+            if self.device.type == "cuda"
+            else None
+        )
+        if self.stream is not None:
+            self.stream.wait_stream(torch.cuda.current_stream(self.device))
+        self.previous_actions: torch.Tensor | None = None
+
+    def reset(self) -> None:
+        self.previous_actions = None
 
     def _normalize_state(self, state: torch.Tensor) -> torch.Tensor:
         span = self.state_max - self.state_min
@@ -96,31 +107,53 @@ class Psi0Planner:
                 self.pooled[text] = text_model(**tokens).text_embeds[0]
         return torch.stack([self.pooled[text] for text in instructions])
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def predict(
-        self, images: torch.Tensor, states: RobotState, instructions: list[str]
+        self,
+        images: torch.Tensor,
+        joint_positions: torch.Tensor,
+        instructions: list[str],
+        executed_actions: int = 0,
+        inference_delay: int = 6,
     ) -> torch.Tensor:
-        batch = states.joint_pos.shape[0]
-        missing_joints = states.joint_pos.new_zeros((batch, 16))
-        planner_state = torch.cat((states.joint_pos, missing_joints), dim=-1)
-        normalized = self._normalize_state(planner_state).unsqueeze(1)
-        # The checkpoint's ZED Mini videos contain eight padded rows below the
-        # native 672x376 image.
-        images = torch.cat(
-            (images, images.new_zeros((batch, 8, images.shape[2], 3))), dim=1
+        stream_context = (
+            torch.cuda.stream(self.stream) if self.stream is not None else nullcontext()
         )
-        observations = [
-            [self.image_transform(Image.fromarray(frame))]
-            for frame in images.cpu().numpy()
-        ]
-        lowered = [instruction.lower() for instruction in instructions]
-        actions = self.model.predict_action(
-            observations=observations,
-            states=normalized,
-            instructions=lowered,
-            num_inference_steps=self.inference_steps,
-            pooled_projections=self._pooled_projections(lowered),
-        ).float()
+        with stream_context:
+            joint_positions = joint_positions.to(self.device)
+            batch = joint_positions.shape[0]
+            missing_joints = joint_positions.new_zeros((batch, 16))
+            planner_state = torch.cat((joint_positions, missing_joints), dim=-1)
+            normalized = self._normalize_state(planner_state).unsqueeze(1)
+            # The checkpoint's ZED Mini videos contain eight padded rows below the
+            # native 672x376 image.
+            images = torch.cat(
+                (images, images.new_zeros((batch, 8, images.shape[2], 3))), dim=1
+            )
+            observations = [
+                [self.image_transform(Image.fromarray(frame))]
+                for frame in images.cpu().numpy()
+            ]
+            lowered = [instruction.lower() for instruction in instructions]
+            previous_actions = None
+            if self.previous_actions is not None:
+                tail = self.previous_actions[:, executed_actions:]
+                previous_actions = torch.nn.functional.pad(
+                    tail, (0, 0, 0, executed_actions)
+                )
+            actions = self.model.predict_action(
+                observations=observations,
+                states=normalized,
+                instructions=lowered,
+                num_inference_steps=self.inference_steps,
+                pooled_projections=self._pooled_projections(lowered),
+                previous_actions=previous_actions,
+                inference_delay=inference_delay,
+                execution_horizon=executed_actions,
+            ).float()
+        if self.stream is not None:
+            self.stream.synchronize()
+        self.previous_actions = actions
         low = self.action_min[:64]
         high = self.action_max[:64]
         body_token = 0.5 * (actions[..., :64] + 1) * (high - low) + low
