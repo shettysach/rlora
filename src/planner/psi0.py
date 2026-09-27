@@ -123,4 +123,5 @@ class Psi0Planner:
         ).float()
         low = self.action_min[:64]
         high = self.action_max[:64]
-        return 0.5 * (actions[..., :64] + 1) * (high - low) + low
+        body_token = 0.5 * (actions[..., :64] + 1) * (high - low) + low
+        return body_token.mul(16).round().clamp(-16, 15).div(16)
