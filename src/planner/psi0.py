@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import nullcontext
 from pathlib import Path
@@ -10,6 +11,8 @@ from torch import nn
 from torchvision.transforms import v2
 
 from planner._psi0 import Psi0Model
+from planner._psi0.lora import load_adapter
+from planner._psi0.preprocessing import normalize_bounds
 
 
 class Psi0Planner:
@@ -23,6 +26,7 @@ class Psi0Planner:
         clip_model: Path,
         device: str = "cuda",
         inference_steps: int = 8,
+        bc_checkpoint: Path | None = None,
     ):
         self.device = torch.device(device)
         self.inference_steps = inference_steps
@@ -55,6 +59,24 @@ class Psi0Planner:
         self.model = Psi0Model.from_pretrained(
             run_dir, ckpt_step, model_config, qwen_model, self.device
         )
+        if bc_checkpoint is not None:
+            adapter_config = json.loads((bc_checkpoint / "bc_config.json").read_text())
+            base = adapter_config["model"]
+            config_hash = hashlib.sha256(
+                (run_dir / "run_config.json").read_bytes()
+            ).hexdigest()
+            if (
+                base["base_config_sha256"] != config_hash
+                or base["ckpt_step"] != ckpt_step
+            ):
+                raise ValueError(
+                    "BC adapter was trained against a different base checkpoint"
+                )
+            load_adapter(
+                self.model.action_header,
+                bc_checkpoint / "adapter.safetensors",
+                base["lora_rank"],
+            )
         self.horizon = model_config["action_chunk_size"]
         self.clip_model = clip_model
         self.text_encoder = None
@@ -76,12 +98,26 @@ class Psi0Planner:
         self.previous_actions = None
 
     def _normalize_state(self, state: torch.Tensor) -> torch.Tensor:
-        span = self.state_max - self.state_min
-        constant = span.abs() < 1e-4 * (
-            self.state_max.abs() + self.state_min.abs() + 1e-8
-        )
-        normalized = (state - self.state_min) / span.masked_fill(constant, 1) * 2 - 1
-        return normalized.masked_fill(constant, 0).clamp(-1, 1)
+        return normalize_bounds(state, self.state_min, self.state_max, state=True)
+
+    @torch.no_grad()
+    def prepare_batch(self, samples: list[dict]) -> dict:
+        """Prepare converted demonstrations using the checkpoint's transforms."""
+        instructions = [sample["instruction"].lower() for sample in samples]
+        states = torch.stack([sample["states"] for sample in samples]).to(self.device)
+        actions = torch.stack([sample["actions"] for sample in samples]).to(self.device)
+        return {
+            "observations": [
+                [self.image_transform(sample["image"])] for sample in samples
+            ],
+            "states": self._normalize_state(states),
+            "instructions": instructions,
+            "actions": normalize_bounds(actions, self.action_min, self.action_max),
+            "actions_mask": torch.stack(
+                [sample["actions_mask"] for sample in samples]
+            ).to(self.device),
+            "pooled_projections": self._pooled_projections(instructions),
+        }
 
     def _pooled_projections(self, instructions: list[str]) -> torch.Tensor:
         missing = [text for text in instructions if text not in self.pooled]

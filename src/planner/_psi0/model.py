@@ -1,4 +1,4 @@
-"""Inference-only Psi-0 model used by the planner."""
+"""Checkpoint-compatible Psi-0 action policy for inference and BC."""
 
 from __future__ import annotations
 
@@ -235,6 +235,7 @@ class ActionTransformerModel(nn.Module):
         heads: int,
         qk_norm: str,
         pooled_projection_dim: int,
+        state_drop_prob: float = 0.0,
     ) -> None:
         super().__init__()
         self.time_ins_embed = CombinedTimestepTextProjEmbeddings(
@@ -244,6 +245,7 @@ class ActionTransformerModel(nn.Module):
         self.obs_proj = ObservationProjection(odim, view_feature_dim, hidden_dim)
         self.state_pos = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.state_null = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02)
+        self.state_drop_prob = state_drop_prob
         self.action_proj_in = ActionProjectionIn(action_dim, hidden_dim, horizon)
         self.transformer_blocks = nn.ModuleList(
             VLATransformerBlock(hidden_dim, heads, qk_norm) for _ in range(num_blocks)
@@ -262,6 +264,11 @@ class ActionTransformerModel(nn.Module):
         condition = self.time_ins_embed(timestep, pooled_projection)
         action_tokens = self.action_proj_in(action)
         state_token = self.obs_proj._obs_proc[1](state[:, -1])[:, None]
+        if self.training and self.state_drop_prob:
+            keep = (
+                torch.rand(state.shape[0], device=state.device) >= self.state_drop_prob
+            )
+            state_token = torch.where(keep[:, None, None], state_token, self.state_null)
         state_token = state_token + self.state_pos
         action_tokens = torch.cat((state_token, action_tokens), dim=1)
         contexts, attention_mask = self.obs_proj(views, attention_mask)
@@ -344,6 +351,7 @@ class Psi0Model(nn.Module):
             heads=model_config["nhead"],
             qk_norm=model_config["qk_norm"],
             pooled_projection_dim=model_config["pooled_projection_dim"],
+            state_drop_prob=model_config.get("state_drop_prob", 0.0),
         )
         with safe_open(checkpoint, framework="pt", device="cpu") as weights:
             action_state = {
@@ -428,6 +436,27 @@ class Psi0Model(nn.Module):
                 [output.hidden_states[index] for index in self.vlm_layer_indices], dim=1
             )
         return views, states, attention_mask
+
+    def bc_loss(self, batch: dict) -> torch.Tensor:
+        """Uniform-time flow matching, with upstream's sum-over-time reduction."""
+        actions = batch["actions"].to(self.device, dtype=torch.float32)
+        sigma = torch.rand(actions.shape[0], device=self.device)
+        noise = torch.randn_like(actions)
+        noisy = (1 - sigma[:, None, None]) * actions + sigma[:, None, None] * noise
+        views, states, attention_mask = self._conditioning(
+            batch["observations"], batch["states"], batch["instructions"]
+        )
+        with torch.autocast(self.device.type, dtype=torch.bfloat16):
+            prediction = self.action_header(
+                noisy,
+                views,
+                states,
+                sigma * self.scheduler.config["num_train_timesteps"],
+                batch["pooled_projections"].to(self.device),
+                attention_mask,
+            )
+        error = (prediction.float() - (noise - actions)).square()
+        return (error * batch["actions_mask"].to(self.device)).sum(1).mean()
 
     @torch.no_grad()
     def predict_action(

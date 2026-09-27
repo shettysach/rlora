@@ -1,0 +1,27 @@
+{
+  "seed": 0,
+  "dataset": {
+    "root": "artifacts/bones-walk",
+    "task": "walk and turn around",
+    "train_episodes": [47],
+    "val_episodes": [],
+    "action_hz": 30
+  },
+  "model": {
+    "run_dir": "artifacts/psi-model/psi0/sonic-checkpoints/multi-task.psi-dream.2609092156",
+    "ckpt_step": 40000,
+    "qwen_model": "artifacts/qwen3-vl-2b-instruct",
+    "clip_model": "artifacts/clip-vit-large-patch14",
+    "lora_rank": 16,
+    "inference_steps": 8
+  },
+  "training": {
+    "batch_size": 1,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.01,
+    "max_steps": 500,
+    "gradient_accumulation": 4,
+    "max_grad_norm": 1.0,
+    "eval_every": 100
+  }
+}

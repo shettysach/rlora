@@ -1,8 +1,14 @@
 # Batched Ψ₀ → SONIC → MJLab
 
-Milestone 1 runtime for one Ψ₀ planner, one batched SONIC decoder, and multiple G1 environments. No RL, LoRA, dataset writer, or Dora is included.
+One local Ψ₀ planner, one batched SONIC decoder, and multiple G1 environments,
+with a small flow-matching BC component for demonstrated SONIC actions.
 
 SONIC is the only controller in Milestone 1. MJLab owns both `robot_state()` and batched `rgb()` observations.
+
+The [BONES BC experiment](BC_BONES.md) documents the local dataset conversion,
+one-episode overfit, 5/2 episode split, adapter training, and physical comparison.
+It uses the same checkpoint-compatible policy as the runtime. Its frozen base
+and action-expert LoRA follow `AIM.md`.
 
 ## Model artifacts
 
