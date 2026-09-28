@@ -119,3 +119,43 @@ The observation camera uses SONIC's G1 head-camera mount and the ZED Mini WVGA
 view used by the checkpoint data. MJLab renders the native 672×376 image; the
 planner restores the dataset's eight-row bottom pad before applying the saved
 480×270 checkpoint transform.
+
+## Push-box diagnostic probe
+
+`--push-box` selects a flat scene with a 3 kg, 36 cm box centered 1.5 m in
+front of G1. The same head camera and Ψ₀ → 64-D SONIC body token → SONIC
+controller path run without assistance. `--prompt` supplies the task text;
+the default remains the walk-to-target instruction for the original scene.
+
+Run each base prompt with the same seed and episode length. For example, use
+these four prompts with `--push-box --seed 0 --episode-seconds 8` and the model
+artifact flags shown above:
+
+```text
+walk forward
+go to the box
+push the box forward
+go to the box and push it forward
+```
+
+One invocation looks like:
+
+```sh
+uv run --extra cu128 --frozen python src/runtime.py \
+  --push-box --prompt "go to the box" --seed 0 --episode-seconds 8 \
+  --psi-run-dir artifacts/psi-model/psi0/sonic-checkpoints/multi-task.psi-dream.2609092156 \
+  --ckpt-step 40000 \
+  --qwen-model artifacts/qwen3-vl-2b-instruct \
+  --clip-model artifacts/clip-vit-large-patch14 \
+  --sonic-bundle artifacts/sonic \
+  --save-metrics results/push-box/base-go-to-box.json \
+  --record-video results/push-box/base-go-to-box.mp4
+```
+
+The JSON records root and box displacement, heading change, robot-to-box
+distance at each control step and its minimum, contact, fall, Ψ₀ inference
+latencies, termination reason, and a behavior label. Labels use simple distance,
+contact, and displacement thresholds; inspect the video when judging whether
+motion is useful. The run ends on a fall or the time limit. After recording all
+base runs, repeat each command with `--bc-checkpoint PATH`, keeping every other
+argument and the scene unchanged. Use distinct output paths for those runs.

@@ -13,11 +13,11 @@ from mjlab.asset_zoo.robots.unitree_g1.g1_constants import (
     G1_ACTUATOR_WAIST,
     get_g1_robot_cfg,
 )
-from mjlab.entity import EntityArticulationInfoCfg
+from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.scene import SceneCfg
-from mjlab.sensor import CameraSensorCfg
+from mjlab.sensor import CameraSensorCfg, ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.viewer import ViewerConfig
@@ -28,6 +28,23 @@ if TYPE_CHECKING:
     from mujoco import MjSpec  # ty: ignore[unresolved-import]
 
 MJGEOM_CYLINDER = mujoco.mjtGeom.mjGEOM_CYLINDER  # ty: ignore[unresolved-attribute]
+BOX_X = 1.5
+BOX_HALF_SIZE = 0.18
+
+
+def _box_spec() -> MjSpec:
+    spec = mujoco.MjSpec()  # ty: ignore[unresolved-attribute]
+    body = spec.worldbody.add_body(name="box")
+    body.add_freejoint(name="box_joint")
+    body.add_geom(
+        name="box_geom",
+        type=mujoco.mjtGeom.mjGEOM_BOX,  # ty: ignore[unresolved-attribute]
+        size=(BOX_HALF_SIZE,) * 3,
+        mass=3.0,
+        friction=(0.8, 0.01, 0.001),
+        rgba=(0.8, 0.35, 0.1, 1.0),
+    )
+    return spec
 
 
 def _add_goal(spec: MjSpec) -> None:
@@ -43,7 +60,7 @@ def _add_goal(spec: MjSpec) -> None:
     )
 
 
-def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
+def make_env_cfg(num_envs: int, *, push_box: bool = False) -> ManagerBasedRlEnvCfg:
     g1_actuator_7520_14 = replace(
         G1_ACTUATOR_7520_14,
         target_names_expr=(".*_hip_yaw_joint", "waist_yaw_joint"),
@@ -73,10 +90,16 @@ def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
         for actuator in actuators
         for pattern in actuator.target_names_expr
     }
+    entities = {"robot": robot}
+    if push_box:
+        entities["box"] = EntityCfg(
+            spec_fn=_box_spec,
+            init_state=EntityCfg.InitialStateCfg(pos=(BOX_X, 0.0, BOX_HALF_SIZE)),
+        )
     scene = SceneCfg(
         num_envs=num_envs,
         terrain=TerrainEntityCfg(terrain_type="plane"),
-        entities={"robot": robot},
+        entities=entities,
         sensors=(
             CameraSensorCfg(
                 name="observation_camera",
@@ -95,8 +118,19 @@ def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
                 fovy=54.0,
             ),
         ),
-        spec_fn=_add_goal,
+        spec_fn=None if push_box else _add_goal,
     )
+    if push_box:
+        scene.sensors += (
+            ContactSensorCfg(
+                name="robot_box_contact",
+                primary=ContactMatch(mode="subtree", pattern="box", entity="box"),
+                secondary=ContactMatch(
+                    mode="subtree", pattern="pelvis", entity="robot"
+                ),
+                fields=("found",),
+            ),
+        )
     return ManagerBasedRlEnvCfg(
         decimation=4,
         scene=scene,
