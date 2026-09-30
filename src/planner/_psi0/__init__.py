@@ -1,4 +1,4 @@
-"""Checkpoint-compatible Psi-0 policy for inference and BC."""
+"""Checkpoint-compatible Psi-0 inference implementation."""
 
 from .model import Psi0Model
 

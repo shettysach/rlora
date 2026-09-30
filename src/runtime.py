@@ -11,7 +11,6 @@ import torch
 
 from controller.sonic.policy import SonicPolicy
 from planner.psi0 import Psi0Planner
-from push_box import PushBoxProbe
 from sim.env import MjlabEnv
 from walk_to_target import INSTRUCTION, TASK_NAME, WalkToTarget
 
@@ -33,10 +32,6 @@ def run(
     device: str = "cuda",
     viewer_enabled: bool = False,
     record_video: Path | None = None,
-    prompt: str = INSTRUCTION,
-    push_box: bool = False,
-    seed: int = 0,
-    bc_checkpoint: Path | None = None,
 ) -> dict:
     checkpoint = psi_run_dir / "checkpoints" / f"ckpt_{ckpt_step}" / "model.safetensors"
     for path in (
@@ -50,9 +45,7 @@ def run(
         if not path.is_dir():
             raise FileNotFoundError(f"Required model artifact is missing: {path}")
 
-    env = MjlabEnv(
-        num_envs, device=device, record_video=record_video, push_box=push_box, seed=seed
-    )
+    env = MjlabEnv(num_envs, device=device, record_video=record_video)
     viewer = None
     previous_stream = (
         torch.cuda.current_stream() if env.cuda_stream is not None else None
@@ -61,12 +54,7 @@ def run(
         torch.cuda.set_stream(env.cuda_stream)
     try:
         planner = Psi0Planner(
-            psi_run_dir,
-            ckpt_step,
-            qwen_model,
-            clip_model,
-            device=device,
-            bc_checkpoint=bc_checkpoint,
+            psi_run_dir, ckpt_step, qwen_model, clip_model, device=device
         )
         controller = SonicPolicy(
             sonic_bundle, num_envs, device=device, cuda_stream=env.cuda_stream
@@ -81,7 +69,7 @@ def run(
         episodes: list[dict] = []
         control_steps = 0
         gpu_used_peak = 0
-        instructions = [prompt] * num_envs
+        instructions = [INSTRUCTION] * num_envs
         if device.startswith("cuda"):
             torch.cuda.reset_peak_memory_stats()
         wall_start = time.perf_counter()
@@ -109,15 +97,11 @@ def run(
         rtc_deadline_misses = 0
         with ThreadPoolExecutor(max_workers=1) as executor:
             for batch_start in range(0, num_episodes, num_envs):
-                env.reset(seed=seed if push_box else None)
+                env.reset()
                 controller.reset()
                 planner.reset()
                 state = env.robot_state()
-                task = (
-                    PushBoxProbe(state, env.box_position())
-                    if push_box
-                    else WalkToTarget.start(state, episode_seconds)
-                )
+                task = WalkToTarget.start(state, episode_seconds)
                 elapsed = 0.0
                 inference_delays = deque([RTC_INITIAL_DELAY], maxlen=6)
 
@@ -180,56 +164,21 @@ def run(
                         viewer.sync()
 
                     state = env.robot_state()
-                    if push_box:
-                        assert isinstance(task, PushBoxProbe)
-                        task.update(
-                            state,
-                            env.box_position(),
-                            env.touching_box(),
-                            elapsed + env.step_dt,
-                        )
-                    else:
-                        assert isinstance(task, WalkToTarget)
-                        task.update(state, elapsed, env.step_dt)
+                    task.update(state, elapsed, env.step_dt)
                     control_steps += 1
                     elapsed += env.step_dt
                     action_cursor += PLANNER_HZ * env.step_dt
 
-                    if isinstance(task, PushBoxProbe) and bool(task.fell.any().item()):
-                        break
-
                 active = min(num_envs, num_episodes - batch_start)
-                if push_box:
-                    assert isinstance(task, PushBoxProbe)
-                    reason = "fall" if bool(task.fell.any().item()) else "time_limit"
-                    episodes.extend(
-                        task.results(env.robot_state(), env.box_position(), reason)[
-                            :active
-                        ]
-                    )
-                else:
-                    assert isinstance(task, WalkToTarget)
-                    episodes.extend(task.results(env.robot_state(), active))
+                episodes.extend(task.results(env.robot_state(), active))
 
         sync_sim()
         wall_seconds = time.perf_counter() - wall_start
-        if push_box:
-            return {
-                "task": "PushBoxProbe-v0",
-                "instruction": prompt,
-                "seed": seed,
-                "base_checkpoint": str(checkpoint),
-                "bc_checkpoint": str(bc_checkpoint) if bc_checkpoint else None,
-                "planner_inference_latencies_ms": [1000 * t for t in planner_times],
-                "planner_latency_ms": 1000 * sum(planner_times) / len(planner_times),
-                "rtc_deadline_misses": rtc_deadline_misses,
-                "episodes": episodes,
-            }
         success_count = sum(episode["success"] for episode in episodes)
         fall_count = sum(episode["fell"] for episode in episodes)
         return {
             "task": TASK_NAME,
-            "instruction": prompt,
+            "instruction": INSTRUCTION,
             "num_envs": num_envs,
             "num_episodes": num_episodes,
             "success_rate": success_count / num_episodes,
@@ -289,10 +238,6 @@ def main() -> None:
     parser.add_argument("--viewer", action="store_true")
     parser.add_argument("--record-video", type=Path)
     parser.add_argument("--save-metrics", type=Path)
-    parser.add_argument("--prompt", default=INSTRUCTION)
-    parser.add_argument("--push-box", action="store_true")
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--bc-checkpoint", type=Path)
 
     args = parser.parse_args()
     if args.num_envs < 1:
@@ -301,8 +246,6 @@ def main() -> None:
         parser.error("--num-episodes must be positive")
     if args.episode_seconds <= 0:
         parser.error("--episode-seconds must be positive")
-    if args.push_box and (args.num_envs != 1 or args.num_episodes != 1):
-        parser.error("--push-box currently requires one environment and episode")
 
     result = run(
         num_envs=args.num_envs,
@@ -316,10 +259,6 @@ def main() -> None:
         device=args.device,
         viewer_enabled=args.viewer,
         record_video=args.record_video,
-        prompt=args.prompt,
-        push_box=args.push_box,
-        seed=args.seed,
-        bc_checkpoint=args.bc_checkpoint,
     )
     output = json.dumps(result, indent=2)
     print(output)

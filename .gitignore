@@ -6,7 +6,6 @@ dist/
 wheels/
 *.egg-info
 artifacts/
-results/
 
 # Virtual environments
 .venv

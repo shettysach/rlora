@@ -18,20 +18,16 @@ class MjlabEnv:
         num_envs: int,
         device: str = "cuda",
         record_video: Path | None = None,
-        push_box: bool = False,
-        seed: int | None = None,
     ):
         self.device = torch.device(device)
         self.record_video = record_video
         self.video_frames: list[np.ndarray] = []
         self.env = ManagerBasedRlEnv(
-            cfg=make_env_cfg(num_envs, push_box=push_box),
+            cfg=make_env_cfg(num_envs),
             device=device,
             render_mode="rgb_array" if record_video is not None else None,
         )
         self.robot = self.env.scene["robot"]
-        self.box = self.env.scene["box"] if push_box else None
-        self.box_contact = self.env.scene["robot_box_contact"] if push_box else None
         self.camera = self.env.scene["observation_camera"]
         if self.device.type == "cuda":
             import warp as wp
@@ -40,7 +36,7 @@ class MjlabEnv:
         else:
             self.cuda_stream = None
         with self.compute_context():
-            self.env.reset(seed=seed)
+            self.env.reset()
 
     def compute_context(self):
         return (
@@ -64,22 +60,14 @@ class MjlabEnv:
     def rgb(self) -> torch.Tensor:
         return self.camera.data.rgb
 
-    def box_position(self) -> torch.Tensor:
-        assert self.box is not None
-        return self.box.data.root_link_pos_w
-
-    def touching_box(self) -> torch.Tensor:
-        assert self.box_contact is not None
-        return self.box_contact.data.found.any(dim=-1)
-
     def step(self, action: torch.Tensor) -> None:
         self.env.step(action)
         if self.record_video is not None:
             frame = cast(np.ndarray, self.env.render())
             self.video_frames.append(frame[0] if frame.ndim == 4 else frame)
 
-    def reset(self, seed: int | None = None) -> None:
-        self.env.reset(seed=seed)
+    def reset(self) -> None:
+        self.env.reset()
 
     @property
     def step_dt(self) -> float:
