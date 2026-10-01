@@ -20,13 +20,12 @@ class Psi0Planner:
         qwen_model: Path,
         device: str = "cuda",
         inference_steps: int = 10,
-        exec_horizon: int = 24,
     ) -> None:
         self.device = torch.device(device)
         self.inference_steps = inference_steps
-        self.exec_horizon = exec_horizon
         saved = json.loads((run_dir / "run_config.json").read_text())
         config = saved["model"]
+        self.exec_horizon = config["action_exec_horizon"]
         field = saved["data"]["transform"]["field"]
         image_config = saved["data"]["transform"]["model"]
         self.image_transform = v2.Compose(
@@ -42,10 +41,6 @@ class Psi0Planner:
         self.model = Psi0Model.from_pretrained(
             run_dir, ckpt_step, config, qwen_model, self.device
         )
-        self.previous_actions: torch.Tensor | None = None
-
-    def reset(self) -> None:
-        self.previous_actions = None
 
     def _normalize_state(self, state: torch.Tensor) -> torch.Tensor:
         span = self.state_max - self.state_min
@@ -67,22 +62,12 @@ class Psi0Planner:
             [self.image_transform(Image.fromarray(frame))]
             for frame in images.cpu().numpy()
         ]
-        previous = None
-        if self.previous_actions is not None:
-            previous = torch.nn.functional.pad(
-                self.previous_actions[:, self.exec_horizon :],
-                (0, 0, 0, self.exec_horizon),
-            )
         actions = self.model.predict_action(
             observations=observations,
             states=states,
             instructions=instructions,
             num_inference_steps=self.inference_steps,
-            previous_actions=previous,
-            inference_delay=6,
-            execution_horizon=self.exec_horizon,
         ).float()
-        self.previous_actions = actions
         output = (
             0.5 * (actions + 1) * (self.action_max - self.action_min) + self.action_min
         )

@@ -64,7 +64,8 @@ batch. `--viewer` enables the passive viewer; omit it for throughput.
 The [task-specific checkpoint](https://huggingface.co/USC-PSI-Lab/psi-model/tree/main/psi0/simple-checkpoints/sonic-wbcbox.neckle.flow1000.cosine.lr1.0e-04.b256.gpus8.2608260223)
 at step 40000 uses the original 43D-state, six-block action head. This branch
 loads that head and its Qwen3-VL weights in process, generates 78D actions,
-and executes 24 actions per prediction.
+and executes the configured 30 actions per prediction using plain flow inference.
+RTC guidance is disabled for this probe.
 
 ```sh
 uv run --extra cu128 --frozen python src/runtime.py \

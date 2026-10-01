@@ -14,3 +14,4 @@ their checkpoint precision. VLM conditioning reads the backbone's final features
 without computing language logits, collecting layer outputs, or retaining a KV cache.
 The unused final language norm is bypassed to preserve the causal wrapper's
 last decoder features in the pinned Transformers version.
+Sampling uses plain flow inference without RTC guidance or previous-action state.

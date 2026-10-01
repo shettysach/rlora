@@ -485,28 +485,10 @@ class Psi0Model(nn.Module):
         states: torch.Tensor,
         instructions: list[str],
         num_inference_steps: int,
-        previous_actions: torch.Tensor | None = None,
-        inference_delay: int = 0,
-        execution_horizon: int = 0,
     ) -> torch.Tensor:
         views, states, attention_mask = self._conditioning(
             observations, states, instructions
         )
-        mask = None
-        if previous_actions is not None:
-            delay = min(inference_delay, self.horizon // 2)
-            execution = max(delay, min(execution_horizon, self.horizon - delay))
-            overlap_end = self.horizon - execution
-            mask = torch.zeros(self.horizon, device=self.device)
-            mask[:delay] = 1
-            if delay < overlap_end:
-                indices = torch.arange(
-                    delay, overlap_end, device=self.device, dtype=torch.float32
-                )
-                weights = (overlap_end - indices) / (overlap_end - delay + 1)
-                mask[delay:overlap_end] = weights * (weights.exp() - 1) / (math.e - 1)
-            previous_actions = previous_actions.to(self.device)
-
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             action = torch.randn(
                 states.shape[0],
@@ -515,56 +497,17 @@ class Psi0Model(nn.Module):
                 device=self.device,
             )
             self.scheduler.set_timesteps(num_inference_steps, device=self.device)
+            self.scheduler.set_begin_index(0)
             timesteps = cast(torch.Tensor, self.scheduler.timesteps)
             for timestep in timesteps:
                 batch_timestep = timestep.expand(states.shape[0])
-                if previous_actions is None:
-                    prediction = self.action_header(
-                        action,
-                        views,
-                        states,
-                        batch_timestep,
-                        attention_mask,
-                    )
-                else:
-                    rtc_mask = cast(torch.Tensor, mask)
-                    sigmas = cast(torch.Tensor, self.scheduler.sigmas)
-                    with torch.enable_grad():
-                        action_for_guidance = action.detach().requires_grad_(True)
-                        prediction = self.action_header(
-                            action_for_guidance,
-                            views,
-                            states,
-                            batch_timestep,
-                            attention_mask,
-                        )
-                        sigma = sigmas[self.scheduler.index_for_timestep(timestep)]
-                        predicted_clean = action_for_guidance - sigma * prediction
-                        error = (
-                            previous_actions - predicted_clean.detach()
-                        ) * rtc_mask[None, :, None]
-                        correction = torch.autograd.grad(
-                            predicted_clean,
-                            action_for_guidance,
-                            grad_outputs=error,
-                        )[0]
-                    correction_norm = torch.linalg.vector_norm(
-                        correction.float(), dim=(1, 2), keepdim=True
-                    )
-                    error_norm = torch.linalg.vector_norm(
-                        error.float(), dim=(1, 2), keepdim=True
-                    )
-                    scale = (
-                        0.9
-                        * error_norm
-                        / (sigma.clamp_min(1e-8) * correction_norm.clamp_min(1e-8))
-                    )
-                    correction = torch.where(
-                        (sigma < 1) & (correction_norm >= 1e-8),
-                        scale * correction,
-                        torch.zeros_like(correction),
-                    )
-                    prediction = prediction.detach() - correction
+                prediction = self.action_header(
+                    action,
+                    views,
+                    states,
+                    batch_timestep,
+                    attention_mask,
+                )
                 step = cast(
                     FlowMatchEulerDiscreteSchedulerOutput,
                     self.scheduler.step(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from time import sleep
 
 import numpy as np
 import torch
@@ -46,8 +47,9 @@ def run(args: argparse.Namespace) -> None:
 
             viewer = SimViewer(env.env)
         if args.mode == "scene":
-            if viewer is not None:
+            while viewer is not None and viewer.is_running():
                 viewer.sync()
+                sleep(0.02)
             return
 
         controller = SonicPolicy(
@@ -62,7 +64,6 @@ def run(args: argparse.Namespace) -> None:
                 device=args.device,
                 inference_steps=args.inference_steps,
             )
-            planner.reset()
         executed = 0
         while executed < args.max_steps:
             if planner is None:
