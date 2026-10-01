@@ -70,10 +70,11 @@ def run(args: argparse.Namespace) -> None:
                 horizon = min(30, args.max_steps - executed)
                 chunk = _reference_chunk(episodes, executed, horizon)
             else:
+                images = env.rgb()
                 if env.cuda_stream is not None:
                     torch.cuda.current_stream(env.device).wait_stream(env.cuda_stream)
                 chunk = planner.predict(
-                    env.rgb(),
+                    images,
                     env.planner_state(),
                     [args.prompt or e.instruction for e in episodes],
                 )

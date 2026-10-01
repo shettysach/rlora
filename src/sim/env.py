@@ -22,6 +22,10 @@ class MjlabEnv:
             device=device,
             render_mode=None,
         )
+        # MJLab senses automatically on step/reset. Keep its captured pipeline
+        # for explicit RGB requests; this scene has no other context sensors.
+        self._render_camera = self.env.sim.sense
+        self.env.sim.sense = lambda: None  # ty: ignore[invalid-assignment]
         self.robot = self.env.scene["robot"]
         self.box = self.env.scene["box"]
         self.camera = self.env.scene["observation_camera"]
@@ -70,7 +74,9 @@ class MjlabEnv:
         return self.box.data.root_link_pose_w
 
     def rgb(self) -> torch.Tensor:
-        return self.camera.data.rgb
+        with self.compute_context():
+            self._render_camera()
+            return self.camera.data.rgb
 
     def step(self, body_action: torch.Tensor, hand_action: torch.Tensor) -> None:
         hand_action = hand_action.index_select(-1, self.mjlab_hand_from_psi0)
@@ -100,7 +106,6 @@ class MjlabEnv:
             )
             self.box.write_root_link_pose_to_sim(box_pose)
             self.env.sim.forward()
-            self.env.sim.sense()
 
     @property
     def step_dt(self) -> float:

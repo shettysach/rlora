@@ -66,6 +66,8 @@ at step 40000 uses the original 43D-state, six-block action head. This branch
 loads that head and its Qwen3-VL weights in process, generates 78D actions,
 and executes the configured 30 actions per prediction using plain flow inference.
 RTC guidance is disabled for this probe.
+The head camera renders a fresh batch only before each policy prediction.
+Replay and scene mode skip head-camera rendering; the optional viewer is separate.
 
 ```sh
 uv run --extra cu128 --frozen python src/runtime.py \
