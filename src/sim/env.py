@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from pathlib import Path
 
-import numpy as np
 import torch
 from mjlab.envs import ManagerBasedRlEnv
 
@@ -17,11 +15,8 @@ class MjlabEnv:
         self,
         num_envs: int,
         device: str = "cuda",
-        record_video: Path | None = None,
     ):
         self.device = torch.device(device)
-        self.record_video = record_video
-        self.video_frames: list[np.ndarray] = []
         self.env = ManagerBasedRlEnv(
             cfg=make_env_cfg(num_envs),
             device=device,
@@ -80,8 +75,6 @@ class MjlabEnv:
     def step(self, body_action: torch.Tensor, hand_action: torch.Tensor) -> None:
         hand_action = hand_action.index_select(-1, self.mjlab_hand_from_psi0)
         self.env.step(torch.cat((body_action, hand_action), dim=-1))
-        if self.record_video is not None:
-            self.video_frames.append(self.rgb()[0].cpu().numpy().copy())
 
     def reset(
         self,
@@ -115,14 +108,3 @@ class MjlabEnv:
 
     def close(self) -> None:
         self.env.close()
-        if self.record_video is not None and self.video_frames:
-            import imageio_ffmpeg
-            import mediapy
-
-            mediapy.set_ffmpeg(imageio_ffmpeg.get_ffmpeg_exe())
-            self.record_video.parent.mkdir(parents=True, exist_ok=True)
-            mediapy.write_video(
-                str(self.record_video),
-                self.video_frames,
-                fps=round(1.0 / self.step_dt),
-            )

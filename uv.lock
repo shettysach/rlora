@@ -689,13 +689,13 @@ name = "ipython"
 version = "9.17.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-5-rlora-cpu' and extra == 'extra-5-rlora-cu128')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "ipython-pygments-lexers" },
     { name = "jedi" },
     { name = "matplotlib-inline" },
-    { name = "pexpect", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-5-rlora-cpu' and extra == 'extra-5-rlora-cu128') or (sys_platform == 'win32' and extra == 'extra-5-rlora-cpu' and extra == 'extra-5-rlora-cu128')" },
+    { name = "pexpect", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
     { name = "prompt-toolkit" },
-    { name = "psutil", marker = "(sys_platform != 'cygwin' and sys_platform != 'emscripten') or (sys_platform == 'cygwin' and extra == 'extra-5-rlora-cpu' and extra == 'extra-5-rlora-cu128') or (sys_platform == 'emscripten' and extra == 'extra-5-rlora-cpu' and extra == 'extra-5-rlora-cu128')" },
+    { name = "psutil", marker = "sys_platform != 'cygwin' and sys_platform != 'emscripten'" },
     { name = "pygments" },
     { name = "stack-data" },
     { name = "traitlets" },
@@ -1768,8 +1768,6 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "diffusers" },
-    { name = "imageio-ffmpeg" },
-    { name = "mediapy" },
     { name = "numpy" },
     { name = "onnx" },
     { name = "pillow" },
@@ -1807,8 +1805,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "diffusers", specifier = "==0.37.0" },
-    { name = "imageio-ffmpeg", specifier = "==0.6.0" },
-    { name = "mediapy", specifier = "==1.2.7" },
     { name = "mjlab", marker = "extra == 'cpu'", git = "https://github.com/mujocolab/mjlab?rev=0fb8a681136be94ffc636a3dd423cabb97d91f10" },
     { name = "mjlab", marker = "extra == 'cu128'", git = "https://github.com/mujocolab/mjlab?rev=0fb8a681136be94ffc636a3dd423cabb97d91f10" },
     { name = "numpy", specifier = "==2.4.6" },

@@ -1,75 +1,47 @@
+"""Preprocessing and direct inference for the released carry-box Psi-0 checkpoint."""
+
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
 from pathlib import Path
 
 import torch
 from PIL import Image
-from torch import nn
 from torchvision.transforms import v2
 
 from planner._psi0 import Psi0Model
 
 
 class Psi0Planner:
-    """Checkpoint-specific Psi-0 preprocessing and batched inference."""
-
     def __init__(
         self,
         run_dir: Path,
         ckpt_step: int,
         qwen_model: Path,
-        clip_model: Path,
         device: str = "cuda",
-        inference_steps: int = 8,
-    ):
+        inference_steps: int = 10,
+        exec_horizon: int = 24,
+    ) -> None:
         self.device = torch.device(device)
         self.inference_steps = inference_steps
-
+        self.exec_horizon = exec_horizon
         saved = json.loads((run_dir / "run_config.json").read_text())
-        model_config = saved["model"]
-        transform = saved["data"]["transform"]
-        field = transform["field"]
-
-        image_transform = transform["model"]
+        config = saved["model"]
+        field = saved["data"]["transform"]["field"]
+        image_config = saved["data"]["transform"]["model"]
         self.image_transform = v2.Compose(
             (
-                v2.Resize(image_transform["resize"]["size"]),
-                v2.CenterCrop(image_transform["center_crop"]["size"]),
+                v2.Resize(image_config["resize"]["size"]),
+                v2.CenterCrop(image_config["center_crop"]["size"]),
             )
         )
-        self.state_min = torch.tensor(
-            field["state_min"], device=self.device, dtype=torch.float32
-        )
-        self.state_max = torch.tensor(
-            field["state_max"], device=self.device, dtype=torch.float32
-        )
-        self.action_min = torch.tensor(
-            field["action_min"], device=self.device, dtype=torch.float32
-        )
-        self.action_max = torch.tensor(
-            field["action_max"], device=self.device, dtype=torch.float32
-        )
-
+        self.state_min = torch.tensor(field["state_min"], device=device)
+        self.state_max = torch.tensor(field["state_max"], device=device)
+        self.action_min = torch.tensor(field["action_min"], device=device)
+        self.action_max = torch.tensor(field["action_max"], device=device)
         self.model = Psi0Model.from_pretrained(
-            run_dir, ckpt_step, model_config, qwen_model, self.device
+            run_dir, ckpt_step, config, qwen_model, self.device
         )
-        self.horizon = model_config["action_chunk_size"]
-        self.clip_model = clip_model
-        self.text_encoder = None
-        cache_path = run_dir / model_config["pooled_cache_path"]
-        cache = torch.load(cache_path, map_location=self.device, weights_only=True)
-        self.pooled = {
-            key.lower(): value.to(self.device) for key, value in cache.items()
-        }
-        self.stream = (
-            torch.cuda.Stream(device=self.device)
-            if self.device.type == "cuda"
-            else None
-        )
-        if self.stream is not None:
-            self.stream.wait_stream(torch.cuda.current_stream(self.device))
         self.previous_actions: torch.Tensor | None = None
 
     def reset(self) -> None:
@@ -83,79 +55,35 @@ class Psi0Planner:
         normalized = (state - self.state_min) / span.masked_fill(constant, 1) * 2 - 1
         return normalized.masked_fill(constant, 0).clamp(-1, 1)
 
-    def _pooled_projections(self, instructions: list[str]) -> torch.Tensor:
-        missing = [text for text in instructions if text not in self.pooled]
-        if missing:
-            from transformers import CLIPTextModelWithProjection, CLIPTokenizer
-
-            if self.text_encoder is None:
-                tokenizer = CLIPTokenizer.from_pretrained(
-                    self.clip_model, local_files_only=True
-                )
-                text_model = CLIPTextModelWithProjection.from_pretrained(
-                    self.clip_model,
-                    local_files_only=True,
-                    dtype=torch.bfloat16,
-                )
-                nn.Module.to(text_model, self.device)
-                text_model.eval().requires_grad_(False)
-                self.text_encoder = tokenizer, text_model
-            tokenizer, text_model = self.text_encoder
-            for text in dict.fromkeys(missing):
-                tokens = tokenizer(
-                    [text], padding=True, truncation=True, return_tensors="pt"
-                ).to(self.device)
-                self.pooled[text] = text_model(**tokens).text_embeds[0]
-        return torch.stack([self.pooled[text] for text in instructions])
-
     @torch.no_grad()
     def predict(
         self,
         images: torch.Tensor,
         joint_positions: torch.Tensor,
         instructions: list[str],
-        executed_actions: int = 0,
-        inference_delay: int = 6,
     ) -> torch.Tensor:
-        stream_context = (
-            torch.cuda.stream(self.stream) if self.stream is not None else nullcontext()
-        )
-        with stream_context:
-            joint_positions = joint_positions.to(self.device)
-            batch = joint_positions.shape[0]
-            missing_joints = joint_positions.new_zeros((batch, 16))
-            planner_state = torch.cat((joint_positions, missing_joints), dim=-1)
-            normalized = self._normalize_state(planner_state).unsqueeze(1)
-            # The checkpoint's ZED Mini videos contain eight padded rows below the
-            # native 672x376 image.
-            images = torch.cat(
-                (images, images.new_zeros((batch, 8, images.shape[2], 3))), dim=1
+        states = self._normalize_state(joint_positions.to(self.device)).unsqueeze(1)
+        observations = [
+            [self.image_transform(Image.fromarray(frame))]
+            for frame in images.cpu().numpy()
+        ]
+        previous = None
+        if self.previous_actions is not None:
+            previous = torch.nn.functional.pad(
+                self.previous_actions[:, self.exec_horizon :],
+                (0, 0, 0, self.exec_horizon),
             )
-            observations = [
-                [self.image_transform(Image.fromarray(frame))]
-                for frame in images.cpu().numpy()
-            ]
-            lowered = [instruction.lower() for instruction in instructions]
-            previous_actions = None
-            if self.previous_actions is not None:
-                tail = self.previous_actions[:, executed_actions:]
-                previous_actions = torch.nn.functional.pad(
-                    tail, (0, 0, 0, executed_actions)
-                )
-            actions = self.model.predict_action(
-                observations=observations,
-                states=normalized,
-                instructions=lowered,
-                num_inference_steps=self.inference_steps,
-                pooled_projections=self._pooled_projections(lowered),
-                previous_actions=previous_actions,
-                inference_delay=inference_delay,
-                execution_horizon=executed_actions,
-            ).float()
-        if self.stream is not None:
-            self.stream.synchronize()
+        actions = self.model.predict_action(
+            observations=observations,
+            states=states,
+            instructions=instructions,
+            num_inference_steps=self.inference_steps,
+            previous_actions=previous,
+            inference_delay=6,
+            execution_horizon=self.exec_horizon,
+        ).float()
         self.previous_actions = actions
-        low = self.action_min[:64]
-        high = self.action_max[:64]
-        body_token = 0.5 * (actions[..., :64] + 1) * (high - low) + low
-        return body_token.clamp(-0.625, 0.625).mul(16).round().div(16)
+        output = (
+            0.5 * (actions + 1) * (self.action_max - self.action_min) + self.action_min
+        )
+        return output

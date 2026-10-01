@@ -10,7 +10,6 @@ import torch
 import torch.nn.functional as F
 from diffusers.models.attention import FeedForward
 from diffusers.models.attention_processor import Attention, AttnProcessor
-from diffusers.models.embeddings import CombinedTimestepTextProjEmbeddings
 from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
     FlowMatchEulerDiscreteScheduler,
     FlowMatchEulerDiscreteSchedulerOutput,
@@ -74,24 +73,38 @@ class AdaLayerNormZero(nn.Module):
         return normalized, gate_attention, shift_mlp, scale_mlp, gate_mlp
 
 
-class JointVLAAttnProcessor(AttnProcessor):
+class TimeNetwork(nn.Module):
+    def __init__(self, hidden_dim: int) -> None:
+        super().__init__()
+        self.w = nn.Parameter(
+            torch.exp(torch.arange(128) * (-math.log(10_000) / 127)),
+            requires_grad=False,
+        )
+        self.out_net = nn.Sequential(
+            nn.Linear(256, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, hidden_dim)
+        )
+
+    def forward(self, timestep: torch.Tensor) -> torch.Tensor:
+        phase = timestep[:, None] * self.w
+        return self.out_net(torch.cat((phase.cos(), phase.sin()), dim=-1))
+
+
+class JointVLAAttnProcessor:
     def __call__(
         self,
         attention: Attention,
         hidden_states: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
         attention_mask: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size = hidden_states.shape[0]
         head_dim = attention.inner_dim // attention.heads
 
         to_k = cast(nn.Linear, attention.to_k)
         to_v = cast(nn.Linear, attention.to_v)
-        norm_q = cast(nn.Module, attention.norm_q)
-        norm_k = cast(nn.Module, attention.norm_k)
+        add_q_proj = cast(nn.Linear, attention.add_q_proj)
         add_k_proj = cast(nn.Linear, attention.add_k_proj)
         add_v_proj = cast(nn.Linear, attention.add_v_proj)
-        norm_added_k = cast(nn.Module, attention.norm_added_k)
         to_out = cast(nn.ModuleList, attention.to_out)
 
         query = attention.to_q(hidden_states)
@@ -100,20 +113,20 @@ class JointVLAAttnProcessor(AttnProcessor):
         query = query.view(batch_size, -1, attention.heads, head_dim).transpose(1, 2)
         key = key.view(batch_size, -1, attention.heads, head_dim).transpose(1, 2)
         value = value.view(batch_size, -1, attention.heads, head_dim).transpose(1, 2)
-        query = norm_q(query)
-        key = norm_k(key)
-
+        context_query = add_q_proj(encoder_hidden_states)
         context_key = add_k_proj(encoder_hidden_states)
         context_value = add_v_proj(encoder_hidden_states)
+        context_query = context_query.view(
+            batch_size, -1, attention.heads, head_dim
+        ).transpose(1, 2)
         context_key = context_key.view(
             batch_size, -1, attention.heads, head_dim
         ).transpose(1, 2)
         context_value = context_value.view(
             batch_size, -1, attention.heads, head_dim
         ).transpose(1, 2)
-        context_key = norm_added_k(context_key)
-
         action_length = hidden_states.shape[1]
+        query = torch.cat((query, context_query), dim=2)
         key = torch.cat((key, context_key), dim=2)
         value = torch.cat((value, context_value), dim=2)
         action_mask = torch.ones(
@@ -127,8 +140,11 @@ class JointVLAAttnProcessor(AttnProcessor):
             query, key, value, attn_mask=joint_mask[:, None, None]
         )
         output = output.transpose(1, 2).reshape(batch_size, -1, attention.inner_dim)
-        output = to_out[1](to_out[0](output))
-        return output
+        action_output = to_out[1](to_out[0](output[:, :action_length]))
+        context_output = output[:, action_length:]
+        if not attention.context_pre_only:
+            context_output = cast(nn.Linear, attention.to_add_out)(context_output)
+        return action_output, context_output
 
 
 class ObservationProjection(nn.Module):
@@ -139,9 +155,17 @@ class ObservationProjection(nn.Module):
         self._obs_proc = nn.Sequential(nn.Dropout(0), nn.Linear(odim, hidden_dim))
 
     def forward(
-        self, views: torch.Tensor, attention_mask: torch.Tensor
+        self, views: torch.Tensor, state: torch.Tensor, attention_mask: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.views_proj(views), attention_mask.float()
+        view_tokens = self.views_proj(views[:, 0])
+        state_token = self._obs_proc(state) + self.enc_pos.pe[
+            : state.shape[1]
+        ].transpose(0, 1)
+        mask = torch.cat(
+            (attention_mask, torch.ones_like(attention_mask[:, : state.shape[1]])),
+            dim=1,
+        )
+        return torch.cat((view_tokens, state_token), dim=1), mask.float()
 
 
 class ActionProjectionIn(nn.Module):
@@ -175,21 +199,25 @@ class ActionProjectionOut(nn.Module):
 
 
 class VLATransformerBlock(nn.Module):
-    def __init__(self, hidden_dim: int, heads: int, qk_norm: str) -> None:
+    def __init__(self, hidden_dim: int, heads: int, context_pre_only: bool) -> None:
         super().__init__()
         self.norm1_act = AdaLayerNormZero(hidden_dim)
-        self.norm1_obs = AdaLayerNormContinuous(hidden_dim)
+        self.norm1_obs = (
+            AdaLayerNormContinuous(hidden_dim)
+            if context_pre_only
+            else AdaLayerNormZero(hidden_dim)
+        )
+        self.context_pre_only = context_pre_only
         self.attn = Attention(
             query_dim=hidden_dim,
             added_kv_proj_dim=hidden_dim,
             dim_head=hidden_dim // heads,
             heads=heads,
             out_dim=hidden_dim,
-            context_pre_only=True,
+            context_pre_only=context_pre_only,
             bias=True,
-            qk_norm=qk_norm,
             eps=1e-6,
-            processor=JointVLAAttnProcessor(),
+            processor=cast(AttnProcessor, JointVLAAttnProcessor()),
         )
         self.norm2_act = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
         self.ff_act = FeedForward(
@@ -199,6 +227,17 @@ class VLATransformerBlock(nn.Module):
             final_dropout=False,
             bias=True,
         )
+        if not context_pre_only:
+            self.norm2_obs = nn.LayerNorm(
+                hidden_dim, elementwise_affine=False, eps=1e-6
+            )
+            self.ff_obs = FeedForward(
+                hidden_dim,
+                hidden_dim,
+                activation_fn="gelu-approximate",
+                final_dropout=False,
+                bias=True,
+            )
 
     def forward(
         self,
@@ -206,12 +245,21 @@ class VLATransformerBlock(nn.Module):
         context: torch.Tensor,
         condition: torch.Tensor,
         attention_mask: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         normalized, gate_attention, shift_mlp, scale_mlp, gate_mlp = self.norm1_act(
             action, condition
         )
-        normalized_context = self.norm1_obs(context, condition)
-        attention_output = self.attn(
+        if self.context_pre_only:
+            normalized_context = self.norm1_obs(context, condition)
+        else:
+            (
+                normalized_context,
+                context_gate,
+                context_shift,
+                context_scale,
+                context_ff_gate,
+            ) = self.norm1_obs(context, condition)
+        attention_output, context_output = self.attn(
             normalized,
             encoder_hidden_states=normalized_context,
             attention_mask=attention_mask,
@@ -219,7 +267,15 @@ class VLATransformerBlock(nn.Module):
         action = action + gate_attention[:, None] * attention_output
         normalized = self.norm2_act(action) * (1 + scale_mlp[:, None])
         normalized = normalized + shift_mlp[:, None]
-        return action + gate_mlp[:, None] * self.ff_act(normalized)
+        action = action + gate_mlp[:, None] * self.ff_act(normalized)
+        if not self.context_pre_only:
+            context = context + context_gate[:, None] * context_output
+            normalized_context = self.norm2_obs(context) * (1 + context_scale[:, None])
+            normalized_context = normalized_context + context_shift[:, None]
+            context = context + context_ff_gate[:, None] * self.ff_obs(
+                normalized_context
+            )
+        return action, context
 
 
 class ActionTransformerModel(nn.Module):
@@ -233,20 +289,14 @@ class ActionTransformerModel(nn.Module):
         hidden_dim: int,
         num_blocks: int,
         heads: int,
-        qk_norm: str,
-        pooled_projection_dim: int,
     ) -> None:
         super().__init__()
-        self.time_ins_embed = CombinedTimestepTextProjEmbeddings(
-            embedding_dim=hidden_dim,
-            pooled_projection_dim=pooled_projection_dim,
-        )
+        self.time_ins_embed = TimeNetwork(hidden_dim)
         self.obs_proj = ObservationProjection(odim, view_feature_dim, hidden_dim)
-        self.state_pos = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-        self.state_null = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02)
         self.action_proj_in = ActionProjectionIn(action_dim, hidden_dim, horizon)
         self.transformer_blocks = nn.ModuleList(
-            VLATransformerBlock(hidden_dim, heads, qk_norm) for _ in range(num_blocks)
+            VLATransformerBlock(hidden_dim, heads, index == num_blocks - 1)
+            for index in range(num_blocks)
         )
         self.action_proj_out = ActionProjectionOut(hidden_dim, action_dim)
 
@@ -256,18 +306,16 @@ class ActionTransformerModel(nn.Module):
         views: torch.Tensor,
         state: torch.Tensor,
         timestep: torch.Tensor,
-        pooled_projection: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> torch.Tensor:
-        condition = self.time_ins_embed(timestep, pooled_projection)
+        condition = self.time_ins_embed(timestep)
         action_tokens = self.action_proj_in(action)
-        state_token = self.obs_proj._obs_proc[1](state[:, -1])[:, None]
-        state_token = state_token + self.state_pos
-        action_tokens = torch.cat((state_token, action_tokens), dim=1)
-        contexts, attention_mask = self.obs_proj(views, attention_mask)
-        for block, context in zip(self.transformer_blocks, contexts.unbind(1)):
-            action_tokens = block(action_tokens, context, condition, attention_mask)
-        return self.action_proj_out(action_tokens[:, 1:], condition)
+        context, attention_mask = self.obs_proj(views, state, attention_mask)
+        for block in self.transformer_blocks:
+            action_tokens, context = block(
+                action_tokens, context, condition, attention_mask
+            )
+        return self.action_proj_out(action_tokens, condition)
 
 
 class Psi0Model(nn.Module):
@@ -277,7 +325,6 @@ class Psi0Model(nn.Module):
         vlm: Qwen3VLForConditionalGeneration,
         processor,
         scheduler: FlowMatchEulerDiscreteScheduler,
-        vlm_layer_indices: list[int],
         action_dim: int,
         horizon: int,
         device: torch.device,
@@ -285,9 +332,11 @@ class Psi0Model(nn.Module):
         super().__init__()
         self.action_header = action_header
         self.vlm = vlm
+        # Transformers 4.57's causal wrapper captures hidden_states[-1] before
+        # this norm. Bypass it so the backbone returns the same conditioning.
+        self.vlm.model.language_model.norm = nn.Identity()
         self.processor = processor
         self.scheduler = scheduler
-        self.vlm_layer_indices = vlm_layer_indices
         self.action_dim = action_dim
         self.horizon = horizon
         self.device = device
@@ -342,8 +391,6 @@ class Psi0Model(nn.Module):
             hidden_dim=model_config["hidden_dim"],
             num_blocks=model_config["num_blocks"],
             heads=model_config["nhead"],
-            qk_norm=model_config["qk_norm"],
-            pooled_projection_dim=model_config["pooled_projection_dim"],
         )
         with safe_open(checkpoint, framework="pt", device="cpu") as weights:
             action_state = {
@@ -352,8 +399,12 @@ class Psi0Model(nn.Module):
                 if key.startswith("action_header.")
             }
         action_header.load_state_dict(action_state, strict=True)
-        del action_state
         action_header.to(device, dtype=torch.bfloat16).eval().requires_grad_(False)
+        # Rounding the fixed frequencies changes the phase at large timesteps.
+        action_header.time_ins_embed.w = nn.Parameter(
+            action_state["time_ins_embed.w"].to(device), requires_grad=False
+        )
+        del action_state
 
         processor = AutoProcessor.from_pretrained(qwen_model, local_files_only=True)
         scheduler = FlowMatchEulerDiscreteScheduler(
@@ -364,7 +415,6 @@ class Psi0Model(nn.Module):
             vlm,
             processor,
             scheduler,
-            model_config["vlm_layer_indices"],
             model_config["action_dim"],
             model_config["action_chunk_size"],
             device,
@@ -416,17 +466,16 @@ class Psi0Model(nn.Module):
         grids = torch.cat(image_grids).to(self.device)
         states = states.to(self.device)
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
-            output = self.vlm(
+            output = self.vlm.model(
                 input_ids=token_ids,
                 attention_mask=attention_mask,
                 pixel_values=pixels,
                 image_grid_thw=grids,
-                output_hidden_states=True,
+                output_hidden_states=False,
+                use_cache=False,
                 return_dict=True,
             )
-            views = torch.stack(
-                [output.hidden_states[index] for index in self.vlm_layer_indices], dim=1
-            )
+            views = output.last_hidden_state[:, None]
         return views, states, attention_mask
 
     @torch.no_grad()
@@ -436,7 +485,6 @@ class Psi0Model(nn.Module):
         states: torch.Tensor,
         instructions: list[str],
         num_inference_steps: int,
-        pooled_projections: torch.Tensor,
         previous_actions: torch.Tensor | None = None,
         inference_delay: int = 0,
         execution_horizon: int = 0,
@@ -444,7 +492,6 @@ class Psi0Model(nn.Module):
         views, states, attention_mask = self._conditioning(
             observations, states, instructions
         )
-        pooled_projections = pooled_projections.to(self.device)
         mask = None
         if previous_actions is not None:
             delay = min(inference_delay, self.horizon // 2)
@@ -477,7 +524,6 @@ class Psi0Model(nn.Module):
                         views,
                         states,
                         batch_timestep,
-                        pooled_projections,
                         attention_mask,
                     )
                 else:
@@ -490,7 +536,6 @@ class Psi0Model(nn.Module):
                             views,
                             states,
                             batch_timestep,
-                            pooled_projections,
                             attention_mask,
                         )
                         sigma = sigmas[self.scheduler.index_for_timestep(timestep)]

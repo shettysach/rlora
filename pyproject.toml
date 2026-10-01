@@ -9,8 +9,6 @@ authors = [
 requires-python = "==3.12.*"
 dependencies = [
     "diffusers==0.37.0",
-    "imageio-ffmpeg==0.6.0",
-    "mediapy==1.2.7",
     "numpy==2.4.6",
     "onnx==1.23.0",
     "pillow==12.3.0",

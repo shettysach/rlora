@@ -9,9 +9,9 @@ order as the [published evaluation data](https://huggingface.co/datasets/USC-PSI
 
 The task succeeds after the box is released onto the table's upper surface for
 over 0.9 seconds, matching the [SIMPLE task](https://github.com/physical-superintelligence-lab/SIMPLE/blob/main/src/simple/tasks/g1_wholebody_xmove_bend_carry_box_sonic.py).
-`--mode replay` feeds recorded actions to the decoder. `--mode policy` asks the
-official Psi0 SONIC HTTP server for action chunks. Both modes execute body and
-hand actions in MJLab and emit per-episode diagnostics.
+`--mode replay` feeds recorded actions to the decoder. `--mode policy` runs the
+published fine-tuned Psi0 checkpoint directly for action chunks. Both modes execute
+body and hand actions in MJLab.
 
 ## Setup
 
@@ -26,6 +26,15 @@ uvx hf download USC-PSI-Lab/psi-data \
 uvx hf download nvidia/GEAR-SONIC model_decoder.onnx \
   --revision 6733128a3d8a523b1418b06bca3cdf61c8b0987f \
   --local-dir artifacts/sonic
+
+uvx hf download USC-PSI-Lab/psi-model \
+  --include 'psi0/simple-checkpoints/sonic-wbcbox.neckle.flow1000.cosine.lr1.0e-04.b256.gpus8.2608260223/run_config.json' \
+  --include 'psi0/simple-checkpoints/sonic-wbcbox.neckle.flow1000.cosine.lr1.0e-04.b256.gpus8.2608260223/checkpoints/ckpt_40000/model.safetensors' \
+  --local-dir artifacts/psi-model
+
+uvx hf download Qwen/Qwen3-VL-2B-Instruct \
+  --include '*.json' '*.txt' '*.model' \
+  --local-dir artifacts/qwen3-vl-2b
 ```
 
 The runtime checks the decoder's SHA-256 so a v1.1 decoder cannot silently
@@ -39,41 +48,36 @@ existing `dex3_hands` branch; source and license are recorded in
 ARCHIVE=artifacts/psi-data/simple-eval/G1WholebodyXMoveBendCarryBoxSonic-v0.zip
 
 uv run --extra cu128 --frozen python src/runtime.py \
-  --mode scene --eval-archive "$ARCHIVE" --episode-indices 0
+  --mode scene --eval-archive "$ARCHIVE" --episode-indices 0 --viewer
 
 uv run --extra cu128 --frozen python src/runtime.py \
   --mode replay --eval-archive "$ARCHIVE" --episode-indices 0 \
-  --max-steps 800 --record-video results/carry-replay.mp4 \
-  --save-metrics results/carry-replay.json
+  --max-steps 800 --viewer
 ```
 
 `--episode-indices 0 1 2 3 4` runs the five published initial states as one
-batch. `--record-video` saves the head-camera view of the first batch member.
+batch. `--viewer` enables the passive viewer; omit it for throughput.
 `--max-steps 50` is a quick smoke run.
 
 ## Run the fine-tuned policy
 
-Start the [published Psi0 server](https://psi-lab.ai/SIMPLE/docs/tutorials/wholebody_loco_manipulation.html)
-with the task-specific `sonic-wbcbox.neckle.flow1000.cosine.lr1.0e-04.b256.gpus8.2608260223`
-checkpoint at step 40000, `--rtc`, `--action-exec-horizon 24`, and port 8014.
-That release has a different Ψ₀ action-head architecture from the checkpoint
-loaded by this repo's older direct Python wrapper. The server runs the released
-model and returns denormalized 78D actions; this branch retains batched SONIC
-execution in MJLab.
+The [task-specific checkpoint](https://huggingface.co/USC-PSI-Lab/psi-model/tree/main/psi0/simple-checkpoints/sonic-wbcbox.neckle.flow1000.cosine.lr1.0e-04.b256.gpus8.2608260223)
+at step 40000 uses the original 43D-state, six-block action head. This branch
+loads that head and its Qwen3-VL weights in process, generates 78D actions,
+and executes 24 actions per prediction.
 
 ```sh
 uv run --extra cu128 --frozen python src/runtime.py \
-  --mode policy --psi-url http://127.0.0.1:8014 \
+  --mode policy \
+  --psi-run-dir artifacts/psi-model/psi0/simple-checkpoints/sonic-wbcbox.neckle.flow1000.cosine.lr1.0e-04.b256.gpus8.2608260223 \
+  --qwen-model artifacts/qwen3-vl-2b \
   --eval-archive "$ARCHIVE" --episode-indices 0 \
-  --prompt 'xmove to the table and bend to pick up the box' \
-  --record-video results/carry-policy.mp4 \
-  --save-metrics results/carry-policy.json
+  --prompt 'xmove to the table and bend to pick up the box'
 ```
 
-The JSON reports placement success, falls, body displacement and heading,
-closest robot-box distance, box displacement and height, hand-box and
-box-table contacts, latency, and termination reason. The room geometry,
-lighting, physics, and camera rendering are approximations of SIMPLE. Matched
+The runtime keeps placement and fall checks on the GPU and checks batch termination
+between action chunks. It does not collect diagnostics, timings, metrics, or videos.
+The room geometry, lighting, physics, and camera rendering are approximations of SIMPLE. Matched
 trajectory or success-rate comparisons therefore require validation on the
 target system. The published evaluation videos are demonstrations, not
 fine-tuned-policy rollouts.

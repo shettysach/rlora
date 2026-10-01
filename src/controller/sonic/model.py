@@ -40,6 +40,12 @@ class SonicModel:
         self.session = ort.InferenceSession(
             model.SerializeToString(), providers=providers
         )
+        self.run_options = ort.RunOptions()
+        if device.type == "cuda" and cuda_stream is not None:
+            # SONIC and simulation enqueue work on the same stream.
+            self.run_options.add_run_config_entry(
+                "disable_synchronize_execution_providers", "1"
+            )
         if (
             device.type == "cuda"
             and "CUDAExecutionProvider" not in self.session.get_providers()
@@ -70,5 +76,5 @@ class SonicModel:
         )
 
     def run(self) -> torch.Tensor:
-        self.session.run_with_iobinding(self.binding)
+        self.session.run_with_iobinding(self.binding, self.run_options)
         return self.output
