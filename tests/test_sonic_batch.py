@@ -40,13 +40,10 @@ def test_one_decoder_keeps_two_histories_independent(
     policy = SonicPolicy(tmp_path, batch_size=2, device="cpu")
     zeros = lambda *shape: torch.zeros(shape)
     state = RobotState(
-        zeros(2, 3),
-        zeros(2, 4),
-        zeros(2, 3),
-        zeros(2, 3),
-        zeros(2, 3),
-        zeros(2, 29),
-        zeros(2, 29),
+        root_ang_vel_b=zeros(2, 3),
+        projected_gravity_b=zeros(2, 3),
+        joint_pos=zeros(2, 29),
+        joint_vel=zeros(2, 29),
     )
     tokens = zeros(2, 64)
     tokens[0, :29] = 0.25
@@ -58,3 +55,30 @@ def test_one_decoder_keeps_two_histories_independent(
     history = policy.model.input[:, policy.LAST_ACTIONS].view(2, 10, 29)
     assert torch.all(history[0, -1] == 0.25)
     assert torch.all(history[1, -1] == 0.5)
+
+    # Run beyond the history length with different per-env tokens and velocities.
+    expected_actions = []
+    expected_velocities = []
+    for step in range(12):
+        tokens[0] = (step % 5) / 16
+        tokens[1] = -(step % 7) / 16
+        state.root_ang_vel_b[0] = step
+        state.root_ang_vel_b[1] = -step
+        actions = policy.act(reference=tokens, robot_state=state)
+        expected_actions.append(tokens[:, :29].clone())
+        expected_velocities.append(state.root_ang_vel_b.clone())
+        torch.testing.assert_close(actions, expected_actions[-1])
+    torch.testing.assert_close(history, torch.stack(expected_actions[-10:], dim=1))
+    velocity_history = policy.model.input[:, policy.BASE_ANGULAR_VELOCITY].view(
+        2, 10, 3
+    )
+    torch.testing.assert_close(
+        velocity_history, torch.stack(expected_velocities[-10:], dim=1)
+    )
+
+    policy.reset()
+    policy.act(reference=tokens, robot_state=state)
+    assert torch.all(history[:, :-1] == 0)
+    assert torch.all(velocity_history[:, :-1] == 0)
+    torch.testing.assert_close(history[:, -1], tokens[:, :29])
+    torch.testing.assert_close(velocity_history[:, -1], state.root_ang_vel_b)

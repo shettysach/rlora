@@ -18,7 +18,6 @@ from PIL import Image
 from qwen_vl_utils import process_vision_info
 from safetensors import safe_open
 from torch import nn
-from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoConfig, AutoProcessor, Qwen3VLForConditionalGeneration
 from transformers.utils import is_flash_attn_2_available
 
@@ -102,7 +101,6 @@ class JointVLAAttnProcessor:
 
         to_k = cast(nn.Linear, attention.to_k)
         to_v = cast(nn.Linear, attention.to_v)
-        add_q_proj = cast(nn.Linear, attention.add_q_proj)
         add_k_proj = cast(nn.Linear, attention.add_k_proj)
         add_v_proj = cast(nn.Linear, attention.add_v_proj)
         to_out = cast(nn.ModuleList, attention.to_out)
@@ -113,12 +111,8 @@ class JointVLAAttnProcessor:
         query = query.view(batch_size, -1, attention.heads, head_dim).transpose(1, 2)
         key = key.view(batch_size, -1, attention.heads, head_dim).transpose(1, 2)
         value = value.view(batch_size, -1, attention.heads, head_dim).transpose(1, 2)
-        context_query = add_q_proj(encoder_hidden_states)
         context_key = add_k_proj(encoder_hidden_states)
         context_value = add_v_proj(encoder_hidden_states)
-        context_query = context_query.view(
-            batch_size, -1, attention.heads, head_dim
-        ).transpose(1, 2)
         context_key = context_key.view(
             batch_size, -1, attention.heads, head_dim
         ).transpose(1, 2)
@@ -126,20 +120,22 @@ class JointVLAAttnProcessor:
             batch_size, -1, attention.heads, head_dim
         ).transpose(1, 2)
         action_length = hidden_states.shape[1]
-        query = torch.cat((query, context_query), dim=2)
+        # The final block consumes context but never updates it.
+        if not attention.context_pre_only:
+            context_query = cast(nn.Linear, attention.add_q_proj)(encoder_hidden_states)
+            context_query = context_query.view(
+                batch_size, -1, attention.heads, head_dim
+            ).transpose(1, 2)
+            query = torch.cat((query, context_query), dim=2)
         key = torch.cat((key, context_key), dim=2)
         value = torch.cat((value, context_value), dim=2)
-        action_mask = torch.ones(
-            batch_size,
-            action_length,
-            dtype=torch.bool,
-            device=attention_mask.device,
-        )
-        joint_mask = torch.cat((action_mask, attention_mask.bool()), dim=1)
         output = F.scaled_dot_product_attention(
-            query, key, value, attn_mask=joint_mask[:, None, None]
+            query, key, value, attn_mask=attention_mask[:, None, None]
         )
         output = output.transpose(1, 2).reshape(batch_size, -1, attention.inner_dim)
+        if attention.context_pre_only:
+            # Preserve the action slice's batch stride for BF16 projection rounding.
+            output = F.pad(output, (0, 0, 0, encoder_hidden_states.shape[1]))
         action_output = to_out[1](to_out[0](output[:, :action_length]))
         context_output = output[:, action_length:]
         if not attention.context_pre_only:
@@ -165,7 +161,7 @@ class ObservationProjection(nn.Module):
             (attention_mask, torch.ones_like(attention_mask[:, : state.shape[1]])),
             dim=1,
         )
-        return torch.cat((view_tokens, state_token), dim=1), mask.float()
+        return torch.cat((view_tokens, state_token), dim=1), mask
 
 
 class ActionProjectionIn(nn.Module):
@@ -303,14 +299,12 @@ class ActionTransformerModel(nn.Module):
     def forward(
         self,
         action: torch.Tensor,
-        views: torch.Tensor,
-        state: torch.Tensor,
+        context: torch.Tensor,
         timestep: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> torch.Tensor:
         condition = self.time_ins_embed(timestep)
         action_tokens = self.action_proj_in(action)
-        context, attention_mask = self.obs_proj(views, state, attention_mask)
         for block in self.transformer_blocks:
             action_tokens, context = block(
                 action_tokens, context, condition, attention_mask
@@ -336,6 +330,7 @@ class Psi0Model(nn.Module):
         # this norm. Bypass it so the backbone returns the same conditioning.
         self.vlm.model.language_model.norm = nn.Identity()
         self.processor = processor
+        self.processor.tokenizer.padding_side = "right"
         self.scheduler = scheduler
         self.action_dim = action_dim
         self.horizon = horizon
@@ -420,15 +415,6 @@ class Psi0Model(nn.Module):
             device,
         )
 
-    def _collate_text(
-        self, input_ids: list[torch.Tensor]
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        pad_id = self.processor.tokenizer.pad_token_id
-        lengths = torch.tensor([tokens.numel() for tokens in input_ids])
-        padded = pad_sequence(input_ids, batch_first=True, padding_value=pad_id)
-        mask = torch.arange(padded.shape[1])[None] < lengths[:, None]
-        return padded.to(self.device), mask.to(self.device)
-
     @torch.no_grad()
     def _conditioning(
         self,
@@ -436,41 +422,37 @@ class Psi0Model(nn.Module):
         states: torch.Tensor,
         instructions: list[str],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        input_ids = []
-        pixel_values = []
-        image_grids = []
+        conversations = []
+        texts = []
         for images, instruction in zip(observations, instructions):
             content = [{"type": "image", "image": image} for image in images]
             content.append({"type": "text", "text": instruction})
             messages = [{"role": "user", "content": content}]
-            text = self.processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
+            conversations.append(messages)
+            texts.append(
+                self.processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
             )
-            image_inputs, video_inputs = cast(
-                tuple[object, object],
-                process_vision_info([messages], image_patch_size=16),
-            )
-            inputs = self.processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt",
-            )
-            input_ids.append(inputs.input_ids[0])
-            pixel_values.append(inputs.pixel_values)
-            image_grids.append(inputs.image_grid_thw)
-
-        token_ids, attention_mask = self._collate_text(input_ids)
-        pixels = torch.cat(pixel_values).to(self.device)
-        grids = torch.cat(image_grids).to(self.device)
+        image_inputs, video_inputs = cast(
+            tuple[object, object],
+            process_vision_info(conversations, image_patch_size=16),
+        )
+        inputs = self.processor(
+            text=texts,
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        ).to(self.device)
+        attention_mask = inputs.attention_mask.bool()
         states = states.to(self.device)
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             output = self.vlm.model(
-                input_ids=token_ids,
+                input_ids=inputs.input_ids,
                 attention_mask=attention_mask,
-                pixel_values=pixels,
-                image_grid_thw=grids,
+                pixel_values=inputs.pixel_values,
+                image_grid_thw=inputs.image_grid_thw,
                 output_hidden_states=False,
                 use_cache=False,
                 return_dict=True,
@@ -490,6 +472,11 @@ class Psi0Model(nn.Module):
             observations, states, instructions
         )
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
+            # Each denoising step starts from the same projected conditioning.
+            context, context_mask = self.action_header.obs_proj(
+                views, states, attention_mask
+            )
+            joint_mask = F.pad(context_mask, (self.horizon, 0), value=True)
             action = torch.randn(
                 states.shape[0],
                 self.horizon,
@@ -503,10 +490,9 @@ class Psi0Model(nn.Module):
                 batch_timestep = timestep.expand(states.shape[0])
                 prediction = self.action_header(
                     action,
-                    views,
-                    states,
+                    context,
                     batch_timestep,
-                    attention_mask,
+                    joint_mask,
                 )
                 step = cast(
                     FlowMatchEulerDiscreteSchedulerOutput,

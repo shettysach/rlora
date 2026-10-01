@@ -45,6 +45,7 @@ class SonicPolicy:
         )
         self.sonic_from_mjlab = torch.as_tensor(SONIC_FROM_MJLAB, device=self.device)
         self.mjlab_from_sonic = torch.as_tensor(MJLAB_FROM_SONIC, device=self.device)
+        self.history_buffer = torch.empty(batch_size, 9, 29, device=self.device)
 
     def reset(self) -> None:
         self.model.input.zero_()
@@ -73,5 +74,7 @@ class SonicPolicy:
 
     def _history(self, field: slice, value: torch.Tensor) -> None:
         history = self.model.input[:, field].view(self.batch_size, 10, -1)
-        history[:, :-1].copy_(history[:, 1:].clone())
+        buffer = self.history_buffer[:, :, : value.shape[-1]]
+        buffer.copy_(history[:, 1:])
+        history[:, :-1].copy_(buffer)
         history[:, -1].copy_(value)

@@ -12,6 +12,7 @@ over 0.9 seconds, matching the [SIMPLE task](https://github.com/physical-superin
 `--mode replay` feeds recorded actions to the decoder. `--mode policy` runs the
 published fine-tuned Psi0 checkpoint directly for action chunks. Both modes execute
 body and hand actions in MJLab.
+Replay actions are copied to the device once at startup and sliced into chunks.
 
 ## Setup
 

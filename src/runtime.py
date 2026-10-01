@@ -56,6 +56,10 @@ def run(args: argparse.Namespace) -> None:
             args.sonic_bundle, count, device=args.device, cuda_stream=env.cuda_stream
         )
         controller.reset()
+        if args.mode == "replay":
+            replay_actions = torch.as_tensor(
+                _reference_chunk(episodes, 0, args.max_steps), device=args.device
+            )
         if args.mode == "policy":
             planner = Psi0Planner(
                 args.psi_run_dir,
@@ -68,18 +72,17 @@ def run(args: argparse.Namespace) -> None:
         while executed < args.max_steps:
             if planner is None:
                 horizon = min(30, args.max_steps - executed)
-                chunk = _reference_chunk(episodes, executed, horizon)
+                actions = replay_actions[:, executed : executed + horizon]
             else:
                 images = env.rgb()
                 if env.cuda_stream is not None:
                     torch.cuda.current_stream(env.device).wait_stream(env.cuda_stream)
-                chunk = planner.predict(
+                actions = planner.predict(
                     images,
                     env.planner_state(),
                     [args.prompt or e.instruction for e in episodes],
                 )
                 horizon = min(planner.exec_horizon, args.max_steps - executed)
-            actions = torch.as_tensor(chunk, device=args.device)
             if env.cuda_stream is not None:
                 env.cuda_stream.wait_stream(torch.cuda.current_stream(env.device))
             for index in range(horizon):

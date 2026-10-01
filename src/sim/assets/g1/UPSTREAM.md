@@ -11,5 +11,7 @@ gear_sonic/data/robot_model/model_data/g1/meshes/
 
 The XML actuator block was removed because MJLab creates the body and hand
 position actuators from `src/sim/config.py`.
+The unused built-in sensor block was also removed. Observations read simulator
+state directly, and MJLab configures the head-camera sensor.
 
 The source repository licenses its source code under Apache-2.0.
