@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +10,9 @@ from controller.sonic.policy import SonicPolicy
 from shared.state import RobotState
 
 
-def test_one_decoder_keeps_two_histories_independent(tmp_path: Path) -> None:
+def test_one_decoder_keeps_two_histories_independent(
+    tmp_path: Path, monkeypatch
+) -> None:
     input_dim = 994
     # Decoder output copies token[0:29], making batch correspondence observable.
     weights = np.zeros((input_dim, 29), dtype=np.float32)
@@ -28,6 +31,11 @@ def test_one_decoder_keeps_two_histories_independent(tmp_path: Path) -> None:
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
     model.ir_version = 10
     onnx.save(model, tmp_path / "model_decoder.onnx")
+    monkeypatch.setattr(
+        SonicPolicy,
+        "DECODER_SHA256",
+        hashlib.sha256((tmp_path / "model_decoder.onnx").read_bytes()).hexdigest(),
+    )
 
     policy = SonicPolicy(tmp_path, batch_size=2, device="cpu")
     zeros = lambda *shape: torch.zeros(shape)
@@ -41,12 +49,12 @@ def test_one_decoder_keeps_two_histories_independent(tmp_path: Path) -> None:
         zeros(2, 29),
     )
     tokens = zeros(2, 64)
-    tokens[0, :29] = 1
-    tokens[1, :29] = 2
+    tokens[0, :29] = 0.25
+    tokens[1, :29] = 0.5
     actions = policy.act(reference=tokens, robot_state=state)
     assert actions.shape == (2, 29)
-    assert torch.all(actions[0] == 1)
-    assert torch.all(actions[1] == 2)
+    assert torch.all(actions[0] == 0.25)
+    assert torch.all(actions[1] == 0.5)
     history = policy.model.input[:, policy.LAST_ACTIONS].view(2, 10, 29)
-    assert torch.all(history[0, -1] == 1)
-    assert torch.all(history[1, -1] == 2)
+    assert torch.all(history[0, -1] == 0.25)
+    assert torch.all(history[1, -1] == 0.5)

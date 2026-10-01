@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import torch
@@ -10,6 +11,7 @@ from shared.state import RobotState
 
 
 class SonicPolicy:
+    DECODER_SHA256 = "c7241a123eaa36b5d64bad19540efde93cac1ad443bd4572fd12ca99898118ed"
     TOKEN = slice(0, 64)
     BASE_ANGULAR_VELOCITY = slice(64, 94)
     JOINT_POSITIONS = slice(94, 384)
@@ -26,8 +28,13 @@ class SonicPolicy:
     ):
         self.device = torch.device(device)
         self.batch_size = batch_size
+        decoder = bundle_dir / "model_decoder.onnx"
+        if hashlib.sha256(decoder.read_bytes()).hexdigest() != self.DECODER_SHA256:
+            raise ValueError(
+                "Expected the pinned older SONIC decoder for carry-box replay"
+            )
         self.model = SonicModel(
-            bundle_dir / "model_decoder.onnx",
+            decoder,
             batch_size,
             self.GRAVITY.stop,
             self.device,
@@ -52,7 +59,9 @@ class SonicPolicy:
             -1, self.sonic_from_mjlab
         )
         joint_vel = robot_state.joint_vel.index_select(-1, self.sonic_from_mjlab)
-        self.model.input[:, self.TOKEN].copy_(reference)
+        self.model.input[:, self.TOKEN].copy_(
+            reference.clamp(-0.625, 0.625).mul(16).round().div(16)
+        )
         self._history(self.BASE_ANGULAR_VELOCITY, robot_state.root_ang_vel_b)
         self._history(self.JOINT_POSITIONS, joint_pos)
         self._history(self.JOINT_VELOCITIES, joint_vel)

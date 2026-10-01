@@ -1,115 +1,79 @@
-# Batched Ψ₀ → SONIC → MJLab
+# Carry-box probe
 
-Milestone 1 runtime for one Ψ₀ planner, one batched SONIC decoder, and multiple G1 environments. No RL, LoRA, dataset writer, or Dora is included.
+This branch ports the scene for `simple/G1WholebodyXMoveBendCarryBoxSonic-v0` to
+the batched MJLab runtime. G1 has 29 SONIC-controlled body joints and 14
+position-controlled Dex3 joints. The scene has a floor box and a table. It uses
+the published 78D action layout: 64 SONIC body-token values followed by 14 hand
+targets, at 50 Hz. The 43D planner state contains the same body and hand joint
+order as the [published evaluation data](https://huggingface.co/datasets/USC-PSI-Lab/psi-data/tree/main/simple-eval).
 
-SONIC is the only controller in Milestone 1. MJLab owns both `robot_state()` and batched `rgb()` observations.
+The task succeeds after the box is released onto the table's upper surface for
+over 0.9 seconds, matching the [SIMPLE task](https://github.com/physical-superintelligence-lab/SIMPLE/blob/main/src/simple/tasks/g1_wholebody_xmove_bend_carry_box_sonic.py).
+`--mode replay` feeds recorded actions to the decoder. `--mode policy` asks the
+official Psi0 SONIC HTTP server for action chunks. Both modes execute body and
+hand actions in MJLab and emit per-episode diagnostics.
 
-## Model artifacts
-
-Supply a SONIC compatible Ψ₀ run with `run_config.json`,
-`clip_pooled_cache.pt`, and `checkpoints/ckpt_<step>/model.safetensors`.
-Supply the SONIC `model_decoder.onnx`. The loader changes the public decoder's
-fixed batch metadata to a dynamic batch axis in memory.
-
-The checkpoint-compatible Ψ₀ inference implementation is vendored under
-`src/planner/_psi0` from physical-superintelligence-lab/Psi0 commit
-`4f3720d45e102b36d7c3e9465ab8062274170518`. The local project owns its full
-Python dependency graph and does not require a Psi0 checkout or a second
-environment. Qwen's processor files and the CLIP text encoder are downloaded
-as pinned local artifacts; the runtime does not fetch model files.
-
-## Install
-
-Install the pinned interpreter with `uv python install 3.12.13`. For local CPU
-development, run `uv sync --extra cpu --frozen`. On a CUDA 12.8 machine, run
-`uv sync --extra cu128 --frozen`. The extras are mutually
-exclusive. Ruff, ty, and pytest are pinned in the development dependency group.
-To run the example on CPU, use `uv run --extra cpu --frozen` and pass
-`--device cpu`.
-
-On the remote RTX 5090, confirm that Torch and ONNX Runtime see CUDA before
-downloading the model artifacts:
+## Setup
 
 ```sh
-nvidia-smi
-uv run --extra cu128 --frozen python -c \
-  'import onnxruntime as ort, torch; ort.preload_dlls(); print(torch.__version__, torch.cuda.get_device_name(), ort.get_available_providers())'
-```
+uv sync --extra cu128 --frozen
 
-The output must name the RTX 5090 and include `CUDAExecutionProvider`.
+uvx hf download USC-PSI-Lab/psi-data \
+  --repo-type dataset \
+  --include simple-eval/G1WholebodyXMoveBendCarryBoxSonic-v0.zip \
+  --local-dir artifacts/psi-data
 
-Download the released artifacts at pinned revisions:
-
-```sh
-uvx hf download USC-PSI-Lab/psi-model \
-  --revision 4c6f9776fc5b18d87945254175e38bb74b9d7748 \
-  --include "psi0/sonic-checkpoints/multi-task.psi-dream.2609092156/**" \
-  --local-dir artifacts/psi-model
-
-uvx hf download nvidia/GEAR-SONIC \
+uvx hf download nvidia/GEAR-SONIC model_decoder.onnx \
   --revision 6733128a3d8a523b1418b06bca3cdf61c8b0987f \
-  --include model_decoder.onnx \
   --local-dir artifacts/sonic
-
-uvx hf download Qwen/Qwen3-VL-2B-Instruct \
-  --revision 89644892e4d85e24eaac8bacfd4f463576704203 \
-  --exclude "*.safetensors" "*.bin" \
-  --local-dir artifacts/qwen3-vl-2b-instruct
-
-uvx hf download openai/clip-vit-large-patch14 \
-  config.json merges.txt model.safetensors special_tokens_map.json \
-  tokenizer.json tokenizer_config.json vocab.json \
-  --revision 32bd64288804d66eefd0ccbe215aa642df71cc41 \
-  --local-dir artifacts/clip-vit-large-patch14
 ```
 
-## Run
+The runtime checks the decoder's SHA-256 so a v1.1 decoder cannot silently
+consume the older task's body tokens. The Dex3 MJCF and meshes came from the
+existing `dex3_hands` branch; source and license are recorded in
+`src/sim/assets/g1/`.
+
+## Inspect and replay
+
+```sh
+ARCHIVE=artifacts/psi-data/simple-eval/G1WholebodyXMoveBendCarryBoxSonic-v0.zip
+
+uv run --extra cu128 --frozen python src/runtime.py \
+  --mode scene --eval-archive "$ARCHIVE" --episode-indices 0
+
+uv run --extra cu128 --frozen python src/runtime.py \
+  --mode replay --eval-archive "$ARCHIVE" --episode-indices 0 \
+  --max-steps 800 --record-video results/carry-replay.mp4 \
+  --save-metrics results/carry-replay.json
+```
+
+`--episode-indices 0 1 2 3 4` runs the five published initial states as one
+batch. `--record-video` saves the head-camera view of the first batch member.
+`--max-steps 50` is a quick smoke run.
+
+## Run the fine-tuned policy
+
+Start the [published Psi0 server](https://psi-lab.ai/SIMPLE/docs/tutorials/wholebody_loco_manipulation.html)
+with the task-specific `sonic-wbcbox.neckle.flow1000.cosine.lr1.0e-04.b256.gpus8.2608260223`
+checkpoint at step 40000, `--rtc`, `--action-exec-horizon 24`, and port 8014.
+That release has a different Ψ₀ action-head architecture from the checkpoint
+loaded by this repo's older direct Python wrapper. The server runs the released
+model and returns denormalized 78D actions; this branch retains batched SONIC
+execution in MJLab.
 
 ```sh
 uv run --extra cu128 --frozen python src/runtime.py \
-  --num-envs 1 --num-episodes 1 --viewer \
-  --psi-run-dir artifacts/psi-model/psi0/sonic-checkpoints/multi-task.psi-dream.2609092156 \
-  --ckpt-step 40000 \
-  --qwen-model artifacts/qwen3-vl-2b-instruct \
-  --clip-model artifacts/clip-vit-large-patch14 \
-  --sonic-bundle artifacts/sonic
+  --mode policy --psi-url http://127.0.0.1:8014 \
+  --eval-archive "$ARCHIVE" --episode-indices 0 \
+  --prompt 'xmove to the table and bend to pick up the box' \
+  --record-video results/carry-policy.mp4 \
+  --save-metrics results/carry-policy.json
 ```
 
-The viewer is optional and passive. Without `--viewer`, no interactive viewer
-is constructed and no viewer state is copied from GPU to CPU. Record the run
-with `--record-video results/walk.mp4` when needed.
-
-For batched headless evaluation:
-
-```sh
-uv run --extra cu128 --frozen python src/runtime.py \
-  --num-envs 32 --num-episodes 256 \
-  --psi-run-dir artifacts/psi-model/psi0/sonic-checkpoints/multi-task.psi-dream.2609092156 \
-  --ckpt-step 40000 \
-  --qwen-model artifacts/qwen3-vl-2b-instruct \
-  --clip-model artifacts/clip-vit-large-patch14 \
-  --sonic-bundle artifacts/sonic \
-  --save-metrics results/walk-to-target.json
-```
-
-`WalkToTarget-v0` places a non-colliding green marker 2 m in front of G1. Its
-reward is progress, with a +5 success bonus and a -5 fall penalty. Success
-requires the upright robot to remain within 0.2 m of the target below 0.2 m/s
-for 0.5 s. The JSON contains per-episode outcomes, aggregate success and fall
-rates, and runtime throughput. The planner action clock is 30 Hz; SONIC and
-MJLab run at 50 Hz. After executing 15 of a chunk's 30 actions, Ψ₀ generates
-the next chunk on a separate CUDA stream while simulation continues. Test-time
-RTC guides the new chunk toward the shifted previous chunk. The
-`rtc_deadline_misses` metric counts replans that did not finish before the
-current chunk expired.
-
-The MJLab G1 has no actuated hands or neck, so the Ψ₀ wrapper packs its 45-D
-state as 12 leg joints, three waist joints, 14 arm joints, 14 neutral hand
-values, and two neutral neck values. The wrapper returns the first 64 dimensions
-of each predicted action, snapped to SONIC's 1/16 finite scalar quantization
-grid in the controller's [-0.625, 0.625] token range, as the body token.
-
-The observation camera uses SONIC's G1 head-camera mount and the ZED Mini WVGA
-view used by the checkpoint data. MJLab renders the native 672×376 image; the
-planner restores the dataset's eight-row bottom pad before applying the saved
-480×270 checkpoint transform.
+The JSON reports placement success, falls, body displacement and heading,
+closest robot-box distance, box displacement and height, hand-box and
+box-table contacts, latency, and termination reason. The room geometry,
+lighting, physics, and camera rendering are approximations of SIMPLE. Matched
+trajectory or success-rate comparisons therefore require validation on the
+target system. The published evaluation videos are demonstrations, not
+fine-tuned-policy rollouts.

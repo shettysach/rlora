@@ -12,3 +12,4 @@ class RobotState:
     projected_gravity_b: torch.Tensor
     joint_pos: torch.Tensor
     joint_vel: torch.Tensor
+    hand_pos: torch.Tensor | None = None
