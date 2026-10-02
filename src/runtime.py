@@ -33,6 +33,7 @@ def run(args: argparse.Namespace) -> None:
     env = MjlabEnv(count, device=args.device)
     viewer = None
     planner = None
+    controller = None
     try:
         with env.compute_context():
             env.reset(
@@ -120,6 +121,11 @@ def run(args: argparse.Namespace) -> None:
     finally:
         if viewer is not None:
             viewer.close()
+        if controller is not None:
+            # Release ONNX Runtime's CUDA resources before the simulator closes.
+            if env.cuda_stream is not None:
+                env.cuda_stream.synchronize()
+            del controller
         env.close()
 
 
