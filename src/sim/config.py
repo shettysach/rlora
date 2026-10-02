@@ -19,7 +19,6 @@ from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.scene import SceneCfg
-from mjlab.sensor import CameraSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.viewer import ViewerConfig
@@ -29,9 +28,8 @@ from shared.g1 import BODY_JOINTS, HAND_JOINTS
 if TYPE_CHECKING:
     from mujoco import MjSpec  # ty: ignore[unresolved-import]
 
-G1_DEX3_XML = Path(__file__).parent / "assets/g1/g1_29dof_with_hand.xml"
-MJGEOM_BOX = mujoco.mjtGeom.mjGEOM_BOX  # ty: ignore[unresolved-attribute]
-MJJOINT_FREE = mujoco.mjtJoint.mjJNT_FREE  # ty: ignore[unresolved-attribute]
+ASSETS = Path(__file__).resolve().parents[2] / "assets"
+G1_DEX3_XML = ASSETS / "g1/g1_29dof_with_hand.xml"
 
 
 def _dex3_spec() -> MjSpec:
@@ -39,31 +37,29 @@ def _dex3_spec() -> MjSpec:
 
 
 def _box_spec() -> MjSpec:
-    spec = mujoco.MjSpec()  # ty: ignore[unresolved-attribute]
-    box = spec.worldbody.add_body(name="box")
-    box.add_joint(name="free_joint", type=MJJOINT_FREE)
-    box.add_geom(
-        name="collision",
-        type=MJGEOM_BOX,
-        size=(0.115, 0.19, 0.217),
-        mass=2.0,
-        friction=(0.8, 0.005, 0.0001),
-        rgba=(0.55, 0.40, 0.25, 1.0),
-    )
-    return spec
+    return mujoco.MjSpec.from_file(str(ASSETS / "simple/box.xml"))  # ty: ignore[unresolved-attribute]
 
 
 def _table_spec() -> MjSpec:
-    spec = mujoco.MjSpec()  # ty: ignore[unresolved-attribute]
-    table = spec.worldbody.add_body(name="top")
-    table.add_geom(
-        name="collision",
-        type=MJGEOM_BOX,
-        size=(0.625, 0.395, 0.05),
-        friction=(0.8, 0.005, 0.0001),
-        rgba=(0.7, 0.68, 0.62, 1.0),
+    return mujoco.MjSpec.from_file(str(ASSETS / "simple/table.xml"))  # ty: ignore[unresolved-attribute]
+
+
+def _scene_visuals(spec: MjSpec) -> None:
+    visuals = mujoco.MjSpec.from_file(str(ASSETS / "simple/scene.xml"))  # ty: ignore[unresolved-attribute]
+    spec.attach(visuals, prefix="simple/", frame=spec.worldbody.add_frame())
+    spec.geom("terrain").material = "simple/groundplane"
+    # SIMPLE builds its scene with MuJoCo's default headlight and haze.
+    spec.visual.headlight.diffuse[:] = visuals.visual.headlight.diffuse
+    spec.visual.headlight.ambient[:] = visuals.visual.headlight.ambient
+    spec.visual.headlight.specular[:] = visuals.visual.headlight.specular
+    spec.visual.rgba.haze[:] = visuals.visual.rgba.haze
+    # SIMPLE's head_stereo_left mount and 110-degree horizontal FOV.
+    spec.body("robot/torso_link").add_camera(
+        name="observation_camera",
+        pos=(0.05762354, 0.01752999, 0.4298702),
+        quat=(0.65925355, 0.25570444, -0.25570444, -0.65925355),
+        fovy=77.5521422,
     )
-    return spec
 
 
 def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
@@ -122,7 +118,10 @@ def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
     }
     scene = SceneCfg(
         num_envs=num_envs,
-        terrain=TerrainEntityCfg(terrain_type="plane"),
+        terrain=TerrainEntityCfg(
+            terrain_type="plane", textures=(), materials=(), lights=()
+        ),
+        spec_fn=_scene_visuals,
         entities={
             "robot": robot,
             "box": EntityCfg(
@@ -134,24 +133,6 @@ def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
                 init_state=EntityCfg.InitialStateCfg(pos=(0.3, 0.0, 0.4)),
             ),
         },
-        sensors=(
-            CameraSensorCfg(
-                name="observation_camera",
-                parent_body="robot/torso_link",
-                # SONIC's G1 head-camera mount with ZED Mini WVGA optics.
-                pos=(0.06, 0.0, 0.45),
-                quat=(
-                    0.66075695,
-                    0.25234433,
-                    -0.25258157,
-                    -0.66024628,
-                ),
-                width=640,
-                height=360,
-                data_types=("rgb",),
-                fovy=77.5521422,
-            ),
-        ),
     )
     return ManagerBasedRlEnvCfg(
         decimation=4,

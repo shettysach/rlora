@@ -41,7 +41,7 @@ uvx hf download Qwen/Qwen3-VL-2B-Instruct \
 The runtime checks the decoder's SHA-256 so a v1.1 decoder cannot silently
 consume the older task's body tokens. The Dex3 MJCF and meshes came from the
 existing `dex3_hands` branch; source and license are recorded in
-`src/sim/assets/g1/`.
+`assets/g1/`.
 
 ## Inspect and replay
 
@@ -67,11 +67,14 @@ at step 40000 uses the original 43D-state, six-block action head. This branch
 loads that head and its Qwen3-VL weights in process, generates 78D actions,
 and executes the configured 30 actions per prediction using plain flow inference.
 RTC guidance is disabled for this probe.
-The head camera renders a fresh batch only before each policy prediction.
+The native MuJoCo head camera renders fresh images only before each policy
+prediction. It copies the batch of poses to the host and renders the worlds
+sequentially, then the planner processes their images as one batch.
 Replay and scene mode skip head-camera rendering; the optional viewer is separate.
+For headless policy runs, set `MUJOCO_GL=egl` before launching.
 
 ```sh
-uv run --extra cu128 --frozen python src/runtime.py \
+MUJOCO_GL=egl uv run --extra cu128 --frozen python src/runtime.py \
   --mode policy \
   --psi-run-dir artifacts/psi-model/psi0/simple-checkpoints/sonic-wbcbox.neckle.flow1000.cosine.lr1.0e-04.b256.gpus8.2608260223 \
   --qwen-model artifacts/qwen3-vl-2b \
@@ -81,7 +84,13 @@ uv run --extra cu128 --frozen python src/runtime.py \
 
 The runtime keeps placement and fall checks on the GPU and checks batch termination
 between action chunks. It does not collect diagnostics, timings, metrics, or videos.
-The room geometry, lighting, physics, and camera rendering are approximations of SIMPLE. Matched
-trajectory or success-rate comparisons therefore require validation on the
+The visual assets live in `assets/`. The default scene matches the blue checker
+floor, tan box, gray table, lights, and head-camera calibration in SIMPLE's
+MuJoCo rendering path and the published carry-box videos. Source details and
+rendering limitations are in [assets/simple/UPSTREAM.md](assets/simple/UPSTREAM.md).
+The furnished HSSD room and Isaac materials are a different visual target.
+Physics and closed-loop success-rate parity still require validation on the
 target system. The published evaluation videos are demonstrations, not
 fine-tuned-policy rollouts.
+See [differences.md](differences.md) for evaluation differences and
+[PERF.md](PERF.md) for CPU transfers and synchronization.

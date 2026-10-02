@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 
+import mujoco
+import numpy as np
 import torch
 from mjlab.envs import ManagerBasedRlEnv
 
@@ -22,13 +24,10 @@ class MjlabEnv:
             device=device,
             render_mode=None,
         )
-        # MJLab senses automatically on step/reset. Keep its captured pipeline
-        # for explicit RGB requests; this scene has no other context sensors.
-        self._render_camera = self.env.sim.sense
-        self.env.sim.sense = lambda: None  # ty: ignore[invalid-assignment]
+        self._renderer = None
+        self._render_data = mujoco.MjData(self.env.sim.mj_model)  # ty: ignore[unresolved-attribute]
         self.robot = self.env.scene["robot"]
         self.box = self.env.scene["box"]
-        self.camera = self.env.scene["observation_camera"]
         body_ids, _ = self.robot.find_joints(BODY_JOINTS, preserve_order=True)
         hand_ids, _ = self.robot.find_joints(HAND_JOINTS, preserve_order=True)
         self.body_joint_ids = torch.as_tensor(body_ids, device=self.device)
@@ -70,9 +69,35 @@ class MjlabEnv:
         return self.box.data.root_link_pose_w
 
     def rgb(self) -> torch.Tensor:
+        # Native MuJoCo matches SIMPLE's checker filtering and lighting. Download
+        # each state array for the batch, then render without advancing physics.
+        model = self.env.sim.mj_model
+        if self._renderer is None:
+            self._renderer = mujoco.Renderer(model, height=360, width=640)
         with self.compute_context():
-            self._render_camera()
-            return self.camera.data.rgb
+            data = self.env.sim.data
+            qpos = data.qpos.cpu().numpy()
+            mocap_pos = data.mocap_pos.cpu().numpy()
+            mocap_quat = data.mocap_quat.cpu().numpy()
+            origins = self.env.scene.env_origins.cpu().numpy()
+        free_joints = model.jnt_qposadr[
+            model.jnt_type == mujoco.mjtJoint.mjJNT_FREE  # ty: ignore[unresolved-attribute]
+        ]
+        images = []
+        for positions, mc_pos, mc_quat, origin in zip(
+            qpos, mocap_pos, mocap_quat, origins
+        ):
+            self._render_data.qpos[:] = positions
+            # Render in local world coordinates so each camera sees the same
+            # floor texture and lighting regardless of the batching offset.
+            for address in free_joints:
+                self._render_data.qpos[address : address + 3] -= origin
+            self._render_data.mocap_pos[:] = mc_pos - origin
+            self._render_data.mocap_quat[:] = mc_quat
+            mujoco.mj_forward(model, self._render_data)  # ty: ignore[unresolved-attribute]
+            self._renderer.update_scene(self._render_data, camera="observation_camera")
+            images.append(self._renderer.render().copy())
+        return torch.from_numpy(np.stack(images))
 
     def step(self, body_action: torch.Tensor, hand_action: torch.Tensor) -> None:
         hand_action = hand_action.index_select(-1, self.mjlab_hand_from_psi0)
@@ -107,4 +132,6 @@ class MjlabEnv:
         return self.env.step_dt
 
     def close(self) -> None:
+        if self._renderer is not None:
+            self._renderer.close()
         self.env.close()

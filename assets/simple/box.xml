@@ -1,0 +1,9 @@
+<mujoco model="carry box">
+  <worldbody>
+    <body name="box">
+      <freejoint name="free_joint"/>
+      <geom name="collision" type="box" size="0.115 0.19 0.217"
+            mass="2" friction="0.8 0.005 0.0001" rgba="0.76 0.6 0.42 1"/>
+    </body>
+  </worldbody>
+</mujoco>
