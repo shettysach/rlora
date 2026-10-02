@@ -78,3 +78,12 @@ class SonicModel:
     def run(self) -> torch.Tensor:
         self.session.run_with_iobinding(self.binding, self.run_options)
         return self.output
+
+    def close(self) -> None:
+        # A synchronized final run drains ORT's deferred CPU buffer releases
+        # before its pinned-memory allocator is destroyed.
+        if self.input.is_cuda:
+            self.session.run_with_iobinding(self.binding, ort.RunOptions())
+            torch.cuda.synchronize(self.input.device)
+        del self.binding
+        del self.session

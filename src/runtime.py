@@ -123,7 +123,7 @@ def run(args: argparse.Namespace) -> None:
             # Release ONNX Runtime's CUDA resources before closing the viewer.
             if env.cuda_stream is not None:
                 env.cuda_stream.synchronize()
-            del controller
+            controller.model.close()
         if viewer is not None:
             viewer.close()
         env.close()
