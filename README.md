@@ -2,7 +2,8 @@
 
 This branch ports the scene for `simple/G1WholebodyXMoveBendCarryBoxSonic-v0` to
 the batched MJLab runtime. G1 has 29 SONIC-controlled body joints and 14
-position-controlled Dex3 joints. The scene has a floor box and a table. It uses
+position-controlled Dex3 joints. The scene has a floor box and a table inside
+SIMPLE's furnished HSSD room (`hssd:scene0`). It uses
 the published 78D action layout: 64 SONIC body-token values followed by 14 hand
 targets, at 50 Hz. The 43D planner state contains the same body and hand joint
 order as the [published evaluation data](https://huggingface.co/datasets/USC-PSI-Lab/psi-data/tree/main/simple-eval).
@@ -18,6 +19,8 @@ Replay actions are copied to the device once at startup and sliced into chunks.
 
 ```sh
 uv sync --extra cu128 --frozen
+
+uv run --extra cu128 --frozen --with usd-core==26.8 python tools/setup_hssd.py
 
 uvx hf download USC-PSI-Lab/psi-data \
   --repo-type dataset \
@@ -42,6 +45,12 @@ The runtime checks the decoder's SHA-256 so a v1.1 decoder cannot silently
 consume the older task's body tokens. The Dex3 MJCF and meshes came from the
 existing `dex3_hands` branch; source and license are recorded in
 `assets/g1/`.
+`tools/setup_hssd.py` downloads the pinned SIMPLE room archive into
+`artifacts/hssd/`, extracts it temporarily, and converts it into
+`assets/hssd/scene0/`. Both the download and generated room files are ignored by
+Git. Rerunning the command reuses the cached archive and rebuilds the room.
+The CC BY-NC 4.0 license and source/conversion details remain in `assets/hssd/`.
+USD is needed only for setup; running the scene requires no Isaac or USD dependency.
 
 ## Inspect and replay
 
@@ -84,13 +93,15 @@ MUJOCO_GL=egl uv run --extra cu128 --frozen python src/runtime.py \
 
 The runtime keeps placement and fall checks on the GPU and checks batch termination
 between action chunks. It does not collect diagnostics, timings, metrics, or videos.
-The visual assets live in `assets/`. The default scene matches the blue checker
-floor, tan box, gray table, lights, and head-camera calibration in SIMPLE's
-MuJoCo rendering path and the published carry-box videos. Source details and
-rendering limitations are in [assets/simple/UPSTREAM.md](assets/simple/UPSTREAM.md).
-The furnished HSSD room and Isaac materials are a different visual target.
+The visual assets live in `assets/`. The default scene uses the actual HSSD
+room geometry and authored diffuse textures from SIMPLE's default
+`mujoco_isaac` evaluation, rendered entirely by native MuJoCo. It includes the
+Isaac box markings and approximates episode 0's lighting and Pearl tabletop.
+MuJoCo approximates the MDL/PBR materials and area lights; pixel equivalence to
+Isaac RTX is not established. Other episodes' task lighting/material variations
+are not replayed yet. See [assets/hssd/UPSTREAM.md](assets/hssd/UPSTREAM.md).
 Physics and closed-loop success-rate parity still require validation on the
-target system. The published evaluation videos are demonstrations, not
-fine-tuned-policy rollouts.
+target system. The published checker-floor reference videos use a different
+visual backend from the current default official evaluator.
 See [differences.md](differences.md) for evaluation differences and
 [PERF.md](PERF.md) for CPU transfers and synchronization.

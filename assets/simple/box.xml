@@ -1,9 +1,22 @@
 <mujoco model="carry box">
   <worldbody>
     <body name="box">
-      <freejoint name="free_joint"/>
-      <geom name="collision" type="box" size="0.115 0.19 0.217"
-            mass="2" friction="0.8 0.005 0.0001" rgba="0.76 0.6 0.42 1"/>
+      <freejoint name="free_joint" />
+      <geom name="collision" type="box" size="0.115 0.19 0.217" mass="2" friction="0.8 0.005 0.0001" rgba="0.865 0.748 0.584 1" />
+      <geom name="front_tape_v" type="box" pos="0.0 -0.1957 0.0" size="0.0207 0.0019 0.19964" material="tape" contype="0" conaffinity="0" density="0" group="2" />
+      <geom name="front_tape_h" type="box" pos="0.0 -0.19684000000000001 0.00868" size="0.1012 0.0019 0.0217" material="tape" contype="0" conaffinity="0" density="0" group="2" />
+      <geom name="front_barcode" type="box" pos="-0.0552 -0.19798000000000002 -0.09548" size="0.023000000000000003 0.0019 0.030380000000000004" material="ink" contype="0" conaffinity="0" density="0" group="2" />
+      <geom name="front_label_1" type="box" pos="0.0506 -0.19798000000000002 0.0868" size="0.029900000000000003 0.0019 0.00868" material="ink" contype="0" conaffinity="0" density="0" group="2" />
+      <geom name="front_label_2" type="box" pos="0.0506 -0.19798000000000002 0.052079999999999994" size="0.0207 0.0019 0.007595000000000001" material="ink" contype="0" conaffinity="0" density="0" group="2" />
+      <geom name="front_edge_l" type="box" pos="-0.1081 -0.19836 0.0" size="0.0028750000000000004 0.0019 0.19964" material="edge" contype="0" conaffinity="0" density="0" group="2" />
+      <geom name="front_edge_r" type="box" pos="0.1081 -0.19836 0.0" size="0.0028750000000000004 0.0019 0.19964" material="edge" contype="0" conaffinity="0" density="0" group="2" />
+      <geom name="top_tape" type="box" pos="0.0 0.0 0.22351000000000001" size="0.0207 0.1634 0.00217" material="tape" contype="0" conaffinity="0" density="0" group="2" />
+      <geom name="right_tape" type="box" pos="0.11845000000000001 0.0 0.00868" size="0.00115 0.13299999999999998 0.0217" material="tape" contype="0" conaffinity="0" density="0" group="2" />
     </body>
   </worldbody>
+  <asset>
+    <material name="tape" rgba="0.9546871718858662 0.8650420277517009 0.6342527406021728 1" specular="0.12" shininess="0.02" />
+    <material name="ink" rgba="0.31330415714736104 0.26006748065395024 0.20598415724984537 1" specular="0.12" shininess="0.02" />
+    <material name="edge" rgba="0.5468542818359313 0.43662706741680085 0.31330415714736104 1" specular="0.12" shininess="0.02" />
+  </asset>
 </mujoco>

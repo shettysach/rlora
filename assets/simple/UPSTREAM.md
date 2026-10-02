@@ -1,71 +1,42 @@
-# SIMPLE carry-box visuals
+# SIMPLE carry-box primitives and camera
 
-The default visual target is the blue checker-floor MuJoCo scene visible in the
-five published `G1WholebodyXMoveBendCarryBoxSonic-v0` evaluation videos. Those
-videos do not show the HSSD room used by SIMPLE's Isaac rendering path.
+The default visual scene is now the actual HSSD room used by SIMPLE's default
+`mujoco_isaac` evaluator. Its assets, conversion, licensing, and limitations are
+in [assets/hssd/UPSTREAM.md](../hssd/UPSTREAM.md).
 
-Sources:
+Source: [SIMPLE](https://github.com/physical-superintelligence-lab/SIMPLE) commit
+`6d10628794d9c7de4596b4f2afb2c054a637c2bc`,
+`src/simple/engines/isaacsim.py` and `src/simple/engines/mujoco.py`; the published
+carry-box evaluation archive supplies the geometry, saved poses, and appearance.
 
-- [SIMPLE](https://github.com/physical-superintelligence-lab/SIMPLE) commit
-  `6d10628794d9c7de4596b4f2afb2c054a637c2bc`,
-  `src/simple/engines/mujoco.py`: checker texture, repeat, lights, primitive box
-  color, table color, head-camera mount, and projection.
-- [SIMPLE assets](https://huggingface.co/datasets/USC-PSI-Lab/SIMPLE) revision
-  `1ce0fa3956706b408df2c7c0e26b0298aa7411fd`, `robots_g1_sonic.zip`:
-  `robots/g1_sonic/g1_29dof_with_hand.xml` supplies the checker material and
-  directional light.
-- [Published evaluation data](https://huggingface.co/datasets/USC-PSI-Lab/psi-data/tree/main/simple-eval):
-  the table/box dimensions and poses, 640 x 360 resolution, and camera focal
-  lengths (`fx = fy = 224.06641222710715`).
+- `scene.xml`: six native lights at episode 0's saved cylinder-light positions,
+  with approximate cool color and illumination. Cylinder area-light photometry
+  is not reproduced by MuJoCo spot lights.
+- `table.xml`: the existing collision slab with an approximation of episode 0's
+  Pearl MDL material. The original HSSD tea table is hidden, as in Isaac.
+- `box.xml`: the existing collision box, with the nine render-only tape/ink
+  markings authored by the Isaac engine. The optional external cardboard
+  texture and MDL shading are approximated by solid native materials.
+- `checker.xml`: retained source of the earlier published-video checker floor;
+  it is no longer the runtime default.
 
-`scene.xml` contains the checker material and two upstream lights. The scene
-callback also restores MuJoCo's default headlight and haze, overriding MJLab's
-viewer defaults. `box.xml` and `table.xml` contain the existing task geometry
-with upstream colors. Their mass, friction, and other dynamics retain this
-repository's existing settings; physics parity is a separate task.
+Physical box/table mass, friction, and contact settings retain their prior
+values. Decorative markings have zero density and no collision participation.
 
 The camera is attached to `torso_link` at `(0.05762354, 0.01752999, 0.4298702)`.
 Its quaternion combines SIMPLE's `(0.91496, 0, 0.40355, 0)` head orientation with
 the Isaac-to-MuJoCo camera-axis conversion, then is normalized. Its vertical FOV
-is `2 * atan(360 / (2 * fy)) = 77.5521422` degrees.
+is `2 * atan(360 / (2 * 224.06641222710715)) = 77.5521422` degrees at 640 × 360.
+The scene uses a fixed 2 m statistic extent and corresponding clipping factors
+for the official Isaac implementation's hard-coded 0.01–10 m camera range.
 
-The VLA camera uses native MuJoCo OpenGL rendering to match SIMPLE's checker
-filtering and lighting. At each prediction, the runtime downloads four batched
-state arrays and renders each world with one shared renderer. Rendering
-removes the batch placement offsets so lights and floor texture are identical
-across environments. This adds host transfers and sequential image rendering;
-physics and planner inference remain batched. OpenGL is initialized lazily,
-so scene/replay mode does not create an offscreen camera renderer.
+The VLA uses one lazy native MuJoCo renderer, downloads four batched state
+arrays, rebases free/mocap bodies to local coordinates, and renders the worlds
+sequentially without advancing physics. Scene/replay mode skips offscreen RGB.
+CPU transfers are listed in [PERF.md](../../PERF.md).
 
-OpenGL requires an EGL-capable driver for headless rendering (`MUJOCO_GL=egl`).
-Driver differences and video compression can still affect pixel comparisons.
-CPU transfers and synchronization are inventoried in [PERF.md](../../PERF.md).
-Isaac MDL materials and RTX rendering are not reproduced.
-
-In the CPU validation setup, MuJoCo 3.11.0 with Mesa EGL produced shadow
-speckles on the table and floor in both the upstream and ported scenes. Running
-with `MESA_EXTENSION_OVERRIDE=-GL_ARB_clip_control` removed those speckles while
-preserving shadows. This is a Mesa-specific validation workaround; it is not
-applied automatically to NVIDIA runs. MuJoCo's
-[classic renderer](https://github.com/google-deepmind/mujoco/blob/3.11.0/src/render/classic/render_gl3.c)
-uses different shadow depth offsets depending on that extension.
-
-Validation used frames 0, 200, and 400 from each of the five published episodes:
-
-- An initial scene-only comparison reduced mean absolute RGB error against an
-  upstream scene reconstruction from 33.47 to 0.12 on the 0–255 scale.
-- The final five-environment runtime comparison, with the Mesa workaround,
-  measured mean error 0.065 against that reconstruction and 4.42 against the
-  compressed published videos. Maximum per-frame errors were 0.30 and 7.97,
-  respectively. This establishes camera/scene agreement for the sampled poses,
-  not Isaac rendering or policy success.
-- RGB requests left simulation positions, velocities, controls, mocap poses,
-  and time unchanged. Identical local poses at different batch origins differed
-  by at most 0.003 mean RGB units. Five environments also executed a finite
-  body/hand step.
-- Compiled physical parameters matched the previous scene exactly. This does
-  not establish physics parity with SIMPLE.
-
-Comparison images are in `artifacts/visual-parity/comparison.png` and
-`artifacts/visual-parity/runtime_episode_000000.png` through episode 4.
-Validation ran on CPU with Mesa EGL; the NVIDIA CUDA driver was unavailable.
+For headless rendering use `MUJOCO_GL=egl`. In CPU validation, MuJoCo 3.11.0 with
+Mesa EGL produced shadow speckles; `MESA_EXTENSION_OVERRIDE=-GL_ARB_clip_control`
+removed them while retaining shadows. This Mesa-specific workaround is not
+applied automatically to NVIDIA runs. It affects MuJoCo's extension-dependent
+[classic shadow depth offsets](https://github.com/google-deepmind/mujoco/blob/3.11.0/src/render/classic/render_gl3.c).

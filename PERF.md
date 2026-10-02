@@ -2,6 +2,8 @@
 
 Inventory of the current runtime, including native MuJoCo RGB rendering.
 This records existing behavior; optimization is deferred.
+The default HSSD room adds visual mesh/texture assets at startup and a second
+mocap root (room plus table); the per-RGB transfer formula below includes both.
 
 Assume `--device cuda`. With a CPU device, the tensor operations below do not
 cross a CPU/CUDA boundary. This is a source inspection, not a CUDA profile:

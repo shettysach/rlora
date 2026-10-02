@@ -1,13 +1,13 @@
-<mujoco model="SIMPLE MuJoCo visuals">
-  <asset>
-    <texture name="groundplane" type="2d" builtin="checker" mark="edge"
-             rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8"
-             width="300" height="300"/>
-    <material name="groundplane" texture="groundplane" texuniform="true"
-              texrepeat="5 5" reflectance="0.2"/>
-  </asset>
+<mujoco model="SIMPLE HSSD lighting approximation">
+  <visual>
+    <headlight ambient="0.18 0.18 0.18" diffuse="0.25 0.25 0.25" specular="0 0 0" />
+  </visual>
   <worldbody>
-    <light name="sun" pos="0 0 1.5" dir="0 0 -1" directional="true"/>
-    <light name="fill" pos="0 0 1.5" dir="0 0 -1" castshadow="false"/>
+    <light name="Light_0_0" pos="-3.0623102 -0.14969483 1.4279463" dir="0 0 -1" cutoff="170" diffuse="0.18 0.2 0.23" ambient="0.025 0.028 0.035" specular="0.12 0.12 0.12" attenuation="1 0 0.04" castshadow="false" />
+    <light name="Light_0_1" pos="-1.059282 -0.48917255 1.4279463" dir="0 0 -1" cutoff="170" diffuse="0.18 0.2 0.23" ambient="0.025 0.028 0.035" specular="0.12 0.12 0.12" attenuation="1 0 0.04" castshadow="true" />
+    <light name="Light_0_2" pos="0.94374617 -0.82865027 1.4279463" dir="0 0 -1" cutoff="170" diffuse="0.18 0.2 0.23" ambient="0.025 0.028 0.035" specular="0.12 0.12 0.12" attenuation="1 0 0.04" castshadow="false" />
+    <light name="Light_1_0" pos="-2.7402711 1.7504396 1.4279463" dir="0 0 -1" cutoff="170" diffuse="0.18 0.2 0.23" ambient="0.025 0.028 0.035" specular="0.12 0.12 0.12" attenuation="1 0 0.04" castshadow="false" />
+    <light name="Light_1_1" pos="-0.73724293 1.4109619 1.4279463" dir="0 0 -1" cutoff="170" diffuse="0.18 0.2 0.23" ambient="0.025 0.028 0.035" specular="0.12 0.12 0.12" attenuation="1 0 0.04" castshadow="true" />
+    <light name="Light_1_2" pos="1.2657852 1.0714842 1.4279463" dir="0 0 -1" cutoff="170" diffuse="0.18 0.2 0.23" ambient="0.025 0.028 0.035" specular="0.12 0.12 0.12" attenuation="1 0 0.04" castshadow="false" />
   </worldbody>
 </mujoco>

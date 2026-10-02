@@ -44,15 +44,32 @@ def _table_spec() -> MjSpec:
     return mujoco.MjSpec.from_file(str(ASSETS / "simple/table.xml"))  # ty: ignore[unresolved-attribute]
 
 
+def _room_spec() -> MjSpec:
+    path = ASSETS / "hssd/scene0/room.xml"
+    if not path.is_file():
+        raise FileNotFoundError(
+            "HSSD room assets are missing. Run from the repo root: "
+            "uv run --extra cu128 --frozen --with usd-core==26.8 "
+            "python tools/setup_hssd.py"
+        )
+    return mujoco.MjSpec.from_file(str(path))  # ty: ignore[unresolved-attribute]
+
+
 def _scene_visuals(spec: MjSpec) -> None:
     visuals = mujoco.MjSpec.from_file(str(ASSETS / "simple/scene.xml"))  # ty: ignore[unresolved-attribute]
     spec.attach(visuals, prefix="simple/", frame=spec.worldbody.add_frame())
-    spec.geom("terrain").material = "simple/groundplane"
-    # SIMPLE builds its scene with MuJoCo's default headlight and haze.
+    # Keep the physical ground plane; the HSSD floor supplies its appearance.
+    spec.geom("terrain").rgba[3] = 0
     spec.visual.headlight.diffuse[:] = visuals.visual.headlight.diffuse
     spec.visual.headlight.ambient[:] = visuals.visual.headlight.ambient
     spec.visual.headlight.specular[:] = visuals.visual.headlight.specular
     spec.visual.rgba.haze[:] = visuals.visual.rgba.haze
+    # Full-house bounds must not enlarge camera clipping distances. SIMPLE's
+    # Isaac cameras hard-code a 1 cm near plane and 10 m far plane.
+    spec.stat.extent = 2.0
+    spec.stat.center[:] = (0.0, 0.0, 1.0)
+    spec.visual.map.znear = 0.005
+    spec.visual.map.zfar = 5.0
     # SIMPLE's head_stereo_left mount and 110-degree horizontal FOV.
     spec.body("robot/torso_link").add_camera(
         name="observation_camera",
@@ -132,6 +149,7 @@ def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
                 spec_fn=_table_spec,
                 init_state=EntityCfg.InitialStateCfg(pos=(0.3, 0.0, 0.4)),
             ),
+            "room": EntityCfg(spec_fn=_room_spec),
         },
     )
     return ManagerBasedRlEnvCfg(
@@ -152,10 +170,10 @@ def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
         },
         sim=SimulationCfg(njmax=256, mujoco=MujocoCfg(timestep=0.005)),
         viewer=ViewerConfig(
-            distance=4.0,
-            elevation=-20.0,
-            azimuth=135.0,
-            lookat=(1.0, 0.0, 0.8),
+            distance=2.5,
+            elevation=-15.0,
+            azimuth=160.0,
+            lookat=(-0.25, 0.0, 0.8),
             max_extra_envs=0,
         ),
         episode_length_s=0.0,
