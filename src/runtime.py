@@ -119,13 +119,13 @@ def run(args: argparse.Namespace) -> None:
                 f"terminal_step={step if step else '-'}"
             )
     finally:
-        if viewer is not None:
-            viewer.close()
         if controller is not None:
-            # Release ONNX Runtime's CUDA resources before the simulator closes.
+            # Release ONNX Runtime's CUDA resources before closing the viewer.
             if env.cuda_stream is not None:
                 env.cuda_stream.synchronize()
             del controller
+        if viewer is not None:
+            viewer.close()
         env.close()
 
 
