@@ -68,6 +68,10 @@ def run(args: argparse.Namespace) -> None:
                 device=args.device,
                 inference_steps=args.inference_steps,
             )
+        with env.compute_context():
+            terminal_steps = torch.zeros(count, dtype=torch.int32, device=env.device)
+            succeeded = torch.zeros(count, dtype=torch.bool, device=env.device)
+            fell = torch.zeros_like(succeeded)
         executed = 0
         while executed < args.max_steps:
             if planner is None:
@@ -94,10 +98,25 @@ def run(args: argparse.Namespace) -> None:
                     env.step(joints, reference[:, 64:78])
                     executed += 1
                     task.update()
+                    newly_done = (terminal_steps == 0) & (task.success | task.fell)
+                    terminal_steps.masked_fill_(newly_done, executed)
+                    succeeded |= newly_done & task.success
+                    fell |= newly_done & task.fell
                 if viewer is not None:
                     viewer.sync()
-            if bool((task.success | task.fell).all().item()):
+            with env.compute_context():
+                all_done = bool((terminal_steps != 0).all().item())
+            if all_done:
                 break
+        with env.compute_context():
+            steps = terminal_steps.cpu().tolist()
+            successes = succeeded.cpu().tolist()
+            falls = fell.cpu().tolist()
+        for episode, step, success, fall in zip(episodes, steps, successes, falls):
+            print(
+                f"episode {episode.index}: success={success}, fell={fall}, "
+                f"terminal_step={step if step else '-'}"
+            )
     finally:
         if viewer is not None:
             viewer.close()
