@@ -281,9 +281,22 @@ if __name__ == "__main__":
         cache_dir=ROOT / "artifacts/hssd",
     )
     output = ROOT / "assets/hssd/scene0"
-    with TemporaryDirectory(prefix="rlora-hssd-") as directory:
+    with (
+        TemporaryDirectory(prefix="rlora-hssd-") as directory,
+        TemporaryDirectory(prefix=".scene0-", dir=output.parent) as staging,
+    ):
         with ZipFile(archive) as source:
             source.extractall(directory)
         print("Converting room to native MuJoCo assets...", flush=True)
-        convert(Path(directory) / f"scenes/hssd/{SCENE}/{SCENE}.usd", output)
+        build = Path(staging) / "new"
+        convert(Path(directory) / f"scenes/hssd/{SCENE}/{SCENE}.usd", build)
+        previous = Path(staging) / "previous"
+        if output.exists():
+            output.rename(previous)
+        try:
+            build.rename(output)
+        except BaseException:
+            if previous.exists():
+                previous.rename(output)
+            raise
     print(f"Room ready: {output}")

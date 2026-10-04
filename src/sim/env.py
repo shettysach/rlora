@@ -26,6 +26,7 @@ class MjlabEnv:
         )
         self._renderer = None
         self._render_data = mujoco.MjData(self.env.sim.mj_model)  # ty: ignore[unresolved-attribute]
+        self._render_static = None
         self.robot = self.env.scene["robot"]
         self.box = self.env.scene["box"]
         body_ids, _ = self.robot.find_joints(BODY_JOINTS, preserve_order=True)
@@ -69,35 +70,37 @@ class MjlabEnv:
         return self.box.data.root_link_pose_w
 
     def rgb(self) -> torch.Tensor:
-        # Native MuJoCo matches SIMPLE's checker filtering and lighting. Download
-        # each state array for the batch, then render without advancing physics.
+        """Return CPU uint8 RGB [n, 360, 640, 3] without advancing physics."""
         model = self.env.sim.mj_model
         if self._renderer is None:
             self._renderer = mujoco.Renderer(model, height=360, width=640)
+            self._render_free_joints = model.jnt_qposadr[
+                model.jnt_type == mujoco.mjtJoint.mjJNT_FREE  # ty: ignore[unresolved-attribute]
+            ]
         with self.compute_context():
             data = self.env.sim.data
             qpos = data.qpos.cpu().numpy()
-            mocap_pos = data.mocap_pos.cpu().numpy()
-            mocap_quat = data.mocap_quat.cpu().numpy()
-            origins = self.env.scene.env_origins.cpu().numpy()
-        free_joints = model.jnt_qposadr[
-            model.jnt_type == mujoco.mjtJoint.mjJNT_FREE  # ty: ignore[unresolved-attribute]
-        ]
-        images = []
-        for positions, mc_pos, mc_quat, origin in zip(
-            qpos, mocap_pos, mocap_quat, origins
+            if self._render_static is None:
+                # The room, table, and world origins stay fixed between resets.
+                origins = self.env.scene.env_origins.cpu().numpy()
+                mocap_pos = data.mocap_pos.cpu().numpy() - origins[:, None]
+                mocap_quat = data.mocap_quat.cpu().numpy()
+                self._render_static = origins, mocap_pos, mocap_quat
+        origins, mocap_pos, mocap_quat = self._render_static
+        images = np.empty((self.env.num_envs, 360, 640, 3), dtype=np.uint8)
+        for image, positions, mc_pos, mc_quat, origin in zip(
+            images, qpos, mocap_pos, mocap_quat, origins
         ):
             self._render_data.qpos[:] = positions
-            # Render in local world coordinates so each camera sees the same
-            # floor texture and lighting regardless of the batching offset.
-            for address in free_joints:
+            # Rebase each world so its camera sees the room at the same local pose.
+            for address in self._render_free_joints:
                 self._render_data.qpos[address : address + 3] -= origin
-            self._render_data.mocap_pos[:] = mc_pos - origin
+            self._render_data.mocap_pos[:] = mc_pos
             self._render_data.mocap_quat[:] = mc_quat
             mujoco.mj_forward(model, self._render_data)  # ty: ignore[unresolved-attribute]
             self._renderer.update_scene(self._render_data, camera="observation_camera")
-            images.append(self._renderer.render().copy())
-        return torch.from_numpy(np.stack(images))
+            self._renderer.render(out=image)
+        return torch.from_numpy(images)
 
     def step(self, body_action: torch.Tensor, hand_action: torch.Tensor) -> None:
         hand_action = hand_action.index_select(-1, self.mjlab_hand_from_psi0)
@@ -111,6 +114,7 @@ class MjlabEnv:
         joint_pos: torch.Tensor | None = None,
         box_pose: torch.Tensor | None = None,
     ) -> None:
+        self._render_static = None
         self.env.reset(seed=seed)
         if base_pose is not None:
             assert joint_pos is not None and box_pose is not None

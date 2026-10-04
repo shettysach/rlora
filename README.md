@@ -77,8 +77,12 @@ loads that head and its Qwen3-VL weights in process, generates 78D actions,
 and executes the configured 30 actions per prediction using plain flow inference.
 RTC guidance is disabled for this probe.
 The native MuJoCo head camera renders fresh images only before each policy
-prediction. It copies the batch of poses to the host and renders the worlds
-sequentially, then the planner processes their images as one batch.
+prediction. It downloads the batch of generalized positions and renders the
+worlds sequentially into one image batch. Fixed scene poses are cached until
+reset. The planner uploads BF16 image patches, builds multimodal positions from
+CPU metadata, and keeps image-grid metadata on CPU for the default SDPA backend.
+Unchanged token/mask/grid metadata reuses its device tensors across predictions;
+image pixels are always updated.
 Replay and scene mode skip head-camera rendering; the optional viewer is separate.
 For headless policy runs, set `MUJOCO_GL=egl` before launching.
 

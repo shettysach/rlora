@@ -335,6 +335,7 @@ class Psi0Model(nn.Module):
         self.action_dim = action_dim
         self.horizon = horizon
         self.device = device
+        self._conditioning_metadata = None
 
     @classmethod
     def from_pretrained(
@@ -444,15 +445,38 @@ class Psi0Model(nn.Module):
             videos=video_inputs,
             padding=True,
             return_tensors="pt",
-        ).to(self.device)
-        attention_mask = inputs.attention_mask.bool()
+        )
+        # Match the vision dtype before upload, halving the BF16 pixel payload.
+        pixels = inputs.pop("pixel_values").to(self.vlm.model.visual.dtype)
+        metadata = (inputs.input_ids, inputs.attention_mask, inputs.image_grid_thw)
+        # Compare CPU metadata; reuse its device tensors while prompts/grids stay fixed.
+        if self._conditioning_metadata is None or any(
+            not torch.equal(value, cached)
+            for value, cached in zip(metadata, self._conditioning_metadata[0])
+        ):
+            # Qwen builds positions in Python. Compute them before upload to avoid
+            # token/grid downloads and synchronization from CUDA.
+            inputs["position_ids"], _ = self.vlm.model.get_rope_index(
+                inputs.input_ids,
+                image_grid_thw=inputs.image_grid_thw,
+                attention_mask=inputs.attention_mask,
+            )
+            # SDPA uses CPU shapes/splits; FA2 needs CUDA cumulative lengths.
+            image_grid = inputs.pop("image_grid_thw")
+            if self.vlm.model.visual.config._attn_implementation == "flash_attention_2":
+                image_grid = image_grid.to(self.device)
+            inputs["attention_mask"] = inputs.attention_mask.bool()
+            self._conditioning_metadata = metadata, inputs.to(self.device), image_grid
+        _, inputs, image_grid = self._conditioning_metadata
+        attention_mask = inputs.attention_mask
         states = states.to(self.device)
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             output = self.vlm.model(
                 input_ids=inputs.input_ids,
+                position_ids=inputs.position_ids,
                 attention_mask=attention_mask,
-                pixel_values=inputs.pixel_values,
-                image_grid_thw=inputs.image_grid_thw,
+                pixel_values=pixels.to(self.device),
+                image_grid_thw=image_grid,
                 output_hidden_states=False,
                 use_cache=False,
                 return_dict=True,

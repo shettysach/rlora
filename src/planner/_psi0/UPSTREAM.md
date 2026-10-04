@@ -19,5 +19,12 @@ Fixed context projection and the joint attention mask are computed once per
 prediction and reused across denoising steps. Checkpoint parameter names are unchanged.
 Image and text preprocessing use one processor call for the environment batch,
 with the original right padding and image order preserved.
+Multimodal position IDs are computed from CPU token/grid metadata before upload.
+SDPA keeps the image grid on CPU for shape/split operations; FA2 uploads it for
+CUDA sequence lengths. Pixel patches are cast to the vision model's BF16 dtype
+before upload, preserving Qwen's input conversion with half the upload payload.
+The last token/mask/grid batch caches device metadata while its CPU values stay
+unchanged. Attention masks are converted to boolean before upload. Changing
+tokens, padding, or grids refreshes the cache; image pixels are always updated.
 The final block skips unused context queries. Padding the attention output keeps
 the action projection's original memory layout to preserve BF16 rounding.

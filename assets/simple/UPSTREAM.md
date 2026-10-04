@@ -30,9 +30,11 @@ is `2 * atan(360 / (2 * 224.06641222710715)) = 77.5521422` degrees at 640 × 360
 The scene uses a fixed 2 m statistic extent and corresponding clipping factors
 for the official Isaac implementation's hard-coded 0.01–10 m camera range.
 
-The VLA uses one lazy native MuJoCo renderer, downloads four batched state
-arrays, rebases free/mocap bodies to local coordinates, and renders the worlds
-sequentially without advancing physics. Scene/replay mode skips offscreen RGB.
+The VLA uses one lazy native MuJoCo renderer, downloads batched generalized
+positions, rebases free/mocap bodies to local coordinates, and renders the worlds
+sequentially into the final RGB batch without advancing physics. Fixed origins
+and room/table mocap poses are cached until reset. Scene/replay mode skips
+offscreen RGB.
 CPU transfers are listed in [PERF.md](../../PERF.md).
 
 For headless rendering use `MUJOCO_GL=egl`. In CPU validation, MuJoCo 3.11.0 with

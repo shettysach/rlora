@@ -9,6 +9,7 @@ artifacts/
 
 # Downloaded and converted HSSD room assets
 /assets/hssd/scene0/
+/assets/hssd/.scene0-*/
 /assets/hssd/preview.png
 
 # Virtual environments
