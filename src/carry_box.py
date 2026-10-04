@@ -8,7 +8,7 @@ import warp as wp
 from sim.env import MjlabEnv
 
 TABLE_TOP_Z = 0.45
-SUCCESS_REWARD = 0.9
+SUCCESS_PLACEMENT_TIME_S = 0.9
 
 
 class CarryBoxTask:
@@ -35,7 +35,7 @@ class CarryBoxTask:
 
     def reset(self) -> None:
         count = self.env.box_pose().shape[0]
-        self.reward = torch.zeros(count, device=self.env.device)
+        self.placement_time_s = torch.zeros(count, device=self.env.device)
         self.success = torch.zeros(count, dtype=torch.bool, device=self.env.device)
         self.fell = torch.zeros_like(self.success)
 
@@ -57,7 +57,7 @@ class CarryBoxTask:
         ) & ((pos[:, 2] - TABLE_TOP_Z).abs() <= 0.05)
         hand_mask &= active & (dist <= 0.01)
         table_mask &= active & (dist <= 0.01)
-        hand = torch.zeros_like(self.reward, dtype=torch.int32)
+        hand = torch.zeros_like(self.placement_time_s, dtype=torch.int32)
         table = torch.zeros_like(hand)
         hand.scatter_add_(0, world, hand_mask.int())
         table.scatter_add_(0, world, table_mask.int())
@@ -67,6 +67,6 @@ class CarryBoxTask:
         box = self.env.box_pose()
         hand_contact, table_contact = self._contacts()
         placed = table_contact & ~hand_contact & (box[:, 2] >= TABLE_TOP_Z)
-        self.reward += placed.float() * self.env.step_dt
-        self.success |= self.reward > SUCCESS_REWARD
+        self.placement_time_s += placed.float() * self.env.step_dt
+        self.success |= self.placement_time_s > SUCCESS_PLACEMENT_TIME_S
         self.fell |= self.env.robot.data.root_link_pos_w[:, 2] < 0.5

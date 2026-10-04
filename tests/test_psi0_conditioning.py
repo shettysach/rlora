@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
@@ -20,7 +22,7 @@ from planner._psi0.model import ActionTransformerModel, Psi0Model
         ),
     ],
 )
-def test_cpu_metadata_preserves_batched_conditioning(monkeypatch, device):
+def test_conditioning_matches_qwen_wrapper(monkeypatch, device):
     torch.manual_seed(0)
     config = Qwen3VLConfig(
         text_config={
@@ -68,6 +70,8 @@ def test_cpu_metadata_preserves_batched_conditioning(monkeypatch, device):
         def __call__(self, **kwargs):
             return BatchFeature({key: value.clone() for key, value in inputs.items()})
 
+    # Keep an unmodified wrapper so the expected features retain the original norm.
+    reference = Qwen3VLForConditionalGeneration(config).bfloat16().to(device).eval()
     model = Psi0Model(
         ActionTransformerModel(
             action_dim=78,
@@ -78,7 +82,7 @@ def test_cpu_metadata_preserves_batched_conditioning(monkeypatch, device):
             num_blocks=1,
             heads=4,
         ),
-        Qwen3VLForConditionalGeneration(config).bfloat16().to(device).eval(),
+        copy.deepcopy(reference),
         Processor(),
         FlowMatchEulerDiscreteScheduler(),
         78,
@@ -86,12 +90,12 @@ def test_cpu_metadata_preserves_batched_conditioning(monkeypatch, device):
         torch.device(device),
     )
     with torch.no_grad(), torch.autocast(device, dtype=torch.bfloat16):
-        expected = model.vlm.model(
+        expected = reference(
             **{key: value.to(device) for key, value in inputs.items()},
-            output_hidden_states=False,
+            output_hidden_states=True,
             use_cache=False,
             return_dict=True,
-        ).last_hidden_state[:, None]
+        ).hidden_states[-1][:, None]
 
     calls = []
     get_positions = model.vlm.model.get_rope_index
@@ -131,15 +135,14 @@ def test_cpu_metadata_preserves_batched_conditioning(monkeypatch, device):
         ("image_grid_thw", torch.tensor([[1, 2, 2], [1, 4, 2]]), 4),
     ):
         inputs[name] = value
-        # Compare each updated batch with the original, uncached backbone call.
-        with monkeypatch.context() as reference_patch:
-            reference_patch.setattr(model.vlm.model, "get_rope_index", get_positions)
-            with torch.no_grad(), torch.autocast(device, dtype=torch.bfloat16):
-                expected = model.vlm.model(
-                    **{key: tensor.to(device) for key, tensor in inputs.items()},
-                    use_cache=False,
-                    return_dict=True,
-                ).last_hidden_state[:, None]
+        # Compare each updated batch with the unmodified causal wrapper.
+        with torch.no_grad(), torch.autocast(device, dtype=torch.bfloat16):
+            expected = reference(
+                **{key: tensor.to(device) for key, tensor in inputs.items()},
+                output_hidden_states=True,
+                use_cache=False,
+                return_dict=True,
+            ).hidden_states[-1][:, None]
         views, _, mask = model._conditioning(
             [[Image.new("RGB", (32, 32))]] * 2, states, ["short", "longer instruction"]
         )

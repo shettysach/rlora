@@ -11,10 +11,11 @@ I reviewed the current `carry-box` working tree, the project guidance and milest
 
 The main readability weakness is **implicit tensor and execution contracts**. A `torch.Tensor` annotation does not explain shape, joint order, units, device, or stream requirements. Those details matter here: planner state is 43D, actions are 78D, body joints have several orderings, and simulation operations depend on the correct CUDA context. Small docstrings at the public boundaries would help substantially. [RobotState](/home/sword/Desktop/USC/lab/rlora/src/shared/state.py:6) is one obvious place.
 
-Two smaller issues deserve attention:
+Two smaller issues:
 
-- In [carry_box.py](/home/sword/Desktop/USC/lab/rlora/src/carry_box.py:66), `reward` actually accumulates placement **time in seconds**, and `SUCCESS_REWARD` is a duration threshold. Naming those quantities by their meaning would make the success rule clearer.
+- **Addressed:** [carry_box.py](/home/sword/Desktop/USC/lab/rlora/src/carry_box.py:66) now names accumulated placement seconds `placement_time_s` and its success threshold `SUCCESS_PLACEMENT_TIME_S`.
 - The Ψ₀ port contains subtle compatibility changes, including bypassing the final language normalization and padding attention output to preserve BF16 rounding. These are explained, but they make this the most delicate code to modify. A focused numerical comparison against the checkpoint’s reference inference would provide more confidence than additional general unit tests. [Model implementation](/home/sword/Desktop/USC/lab/rlora/src/planner/_psi0/model.py:329).
+  CPU component comparisons now match the unmodified Qwen wrapper and pinned upstream attention processor using synthetic weights. The normalization regression test uses an independent wrapper reference. A full comparison with released checkpoint weights and CUDA execution remains outstanding; details are in [UPSTREAM.md](/home/sword/Desktop/USC/lab/rlora/src/planner/_psi0/UPSTREAM.md:33).
 
 **For performance, several important decisions are already good.**
 

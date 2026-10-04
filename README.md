@@ -76,6 +76,9 @@ at step 40000 uses the original 43D-state, six-block action head. This branch
 loads that head and its Qwen3-VL weights in process, generates 78D actions,
 and executes the configured 30 actions per prediction using plain flow inference.
 RTC guidance is disabled for this probe.
+Control steps run MJLab's action manager and physics substeps directly. Episode
+outcomes and resets are handled by the runtime, avoiding the general RL step's
+per-step reset-index synchronization. This scene has only actions and reset events.
 The native MuJoCo head camera renders fresh images only before each policy
 prediction. It downloads the batch of generalized positions and renders the
 worlds sequentially into one image batch. Fixed scene poses are cached until

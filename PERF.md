@@ -122,8 +122,9 @@ GPU latency or every internal kernel/driver synchronization.
 | --- | --- | --- |
 | Runtime `(terminal_steps != 0).all().item()` | Once per action chunk; D2H boolean/host wait | **Needed for the current Python early-exit decision.** Fixed-budget execution could defer it, changing when the rollout stops. Chunk checks already amortize it. |
 | Final steps/success/fall `.cpu().tolist()` | Three D2H arrays once per rollout | **Needed to print results.** Could be packed into one download; outside the steady loop. |
-| MJLab `step`: `reset_buf.nonzero()` | Every control step; CUDA result-size synchronization | **Unnecessary for this task configuration.** No MJLab termination terms exist; outcomes are tracked externally. Removal needs a supported manager fast path or narrower stepping API. |
-| MJLab pending-reset checks, manager scalar logging, NaN diagnostics, recorder downloads | Conditional | **Inactive here.** Auto-reset is enabled; no reward/termination/recording terms are configured; NaN guard is off. Added terms need a new audit. |
+| MJLab RL `step`: `reset_buf.nonzero()` | Bypassed; no per-control-step index discovery | **Removed from the control path.** `MjlabEnv.step` runs action processing, physics substeps, counters, and the final forward refresh directly. Runtime tracks outcomes and performs explicit resets. |
+| MJLab pending-reset checks, per-step manager logging and recorder downloads | Bypassed during control; manager reset paths remain | **Unused by this scene.** There are no reward, termination, observation, command, metric, or recording terms, and events only run on reset. Adding per-step terms requires updating the local step path and this audit. |
+| Simulation NaN diagnostics | Conditional within `sim.step()` | **Inactive here.** NaN guard is off; the direct physics path retains the simulation's guard behavior. |
 | Diffusers `set_timesteps`: CPU NumPy sigma schedule `.to(device)` | H2D once per prediction | **The schedule is needed on GPU; repeated upload is cacheable.** Inference-step count is fixed. The scheduler must also reset its step index; merely skipping this call is incorrect. |
 | Diffusers timestep lookup `.item()` | Bypassed by `set_begin_index(0)` | **No active transfer.** Constructor endpoint `.item()` calls read CPU tensors. Denoising uses device sigmas and Python indices. |
 
@@ -185,11 +186,17 @@ independent image storage, and cache refresh after reset. In the full HSSD scene
 two CPU worlds produce exactly the same pixels as the previous rendering path
 initially, after a control step, and after reset. Rendering leaves `qpos`, `qvel`,
 `ctrl`, `mocap_pos`, `mocap_quat`, and simulation time unchanged.
-A tiny real Qwen3-VL model compares updated conditioning with the previous
-backbone call, including unequal image grids and right padding, with exact BF16
+A tiny real Qwen3-VL model compares updated conditioning with a separate,
+unmodified causal wrapper, including unequal image grids and right padding, with exact BF16
 output equality. Repeated conditioning checks cover fresh pixels with unchanged
 metadata, then cache refresh for changed tokens, padding, and image grids. The
 existing SONIC batch/history test also passes.
+
+Direct physics stepping is compared against the pinned MJLab RL step with two
+worlds using the actual G1 actuators, box, and table (the visual room is omitted).
+CPU simulator state, action histories, planner state, box poses, task outcomes,
+and counters match exactly across changing actions and an explicit episode reset.
+The local control path is also exercised with Python `nonzero()` calls forbidden.
 
 CUDA/FA2 execution, full checkpoint rollouts, driver copies, allocator traffic,
 and throughput require target-GPU profiling. File setup and dataset parsing

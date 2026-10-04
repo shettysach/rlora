@@ -103,8 +103,24 @@ class MjlabEnv:
         return torch.from_numpy(images)
 
     def step(self, body_action: torch.Tensor, hand_action: torch.Tensor) -> None:
+        """Advance physics; the runtime owns episode outcomes and resets."""
         hand_action = hand_action.index_select(-1, self.mjlab_hand_from_psi0)
-        self.env.step(torch.cat((body_action, hand_action), dim=-1))
+        env = self.env
+        env.action_manager.process_action(
+            torch.cat((body_action, hand_action), dim=-1).to(self.device)
+        )
+        # This scene has only action terms and reset events. Bypass RL stepping
+        # so an empty termination manager cannot cause a CUDA nonzero() wait.
+        for _ in range(env.cfg.decimation):
+            env._sim_step_counter += 1
+            env.action_manager.apply_action()
+            env.scene.write_data_to_sim()
+            env.sim.step()
+            env.scene.update(dt=env.physics_dt)
+        env.episode_length_buf += 1
+        env.common_step_counter += 1
+        # mj_step leaves derived state one substep behind integration.
+        env.sim.forward()
 
     def reset(
         self,
