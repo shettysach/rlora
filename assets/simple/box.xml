@@ -2,7 +2,7 @@
   <worldbody>
     <body name="box">
       <freejoint name="free_joint" />
-      <geom name="collision" type="box" size="0.115 0.19 0.217" mass="2" friction="0.8 0.005 0.0001" rgba="0.865 0.748 0.584 1" />
+      <geom name="collision" type="box" size="0.115 0.19 0.217" mass="0.1" friction="0.8 0.05 0.005" condim="4" solref="0.005 2" rgba="0.865 0.748 0.584 1" />
       <geom name="front_tape_v" type="box" pos="0.0 -0.1957 0.0" size="0.0207 0.0019 0.19964" material="tape" contype="0" conaffinity="0" density="0" group="2" />
       <geom name="front_tape_h" type="box" pos="0.0 -0.19684000000000001 0.00868" size="0.1012 0.0019 0.0217" material="tape" contype="0" conaffinity="0" density="0" group="2" />
       <geom name="front_barcode" type="box" pos="-0.0552 -0.19798000000000002 -0.09548" size="0.023000000000000003 0.0019 0.030380000000000004" material="ink" contype="0" conaffinity="0" density="0" group="2" />
