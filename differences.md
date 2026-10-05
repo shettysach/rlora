@@ -50,7 +50,7 @@ RGB or closed-loop policy success is claimed.
 | Replanning | Executes the checkpoint's 30 actions per prediction, or 0.60 s; plain flow inference. | Documented RTC configuration executes 24, or 0.48 s, with RTC guidance. Observation frequency differs independently of guidance. |
 | Episode budget | Default 800 steps, or 16 s. | Current policy evaluator uses `max(2 × demonstration length, 1500)`, at least 30 s. |
 | Failure rule | Pelvis height below 0.5 m records failure. | Official evaluation loop has no equivalent height-based termination; bending can trigger a local failure. |
-| Success rule | Released box/table contact accumulates placement time above 0.9 s; uses table-top height 0.45 m and a contact-distance filter. | Upstream uses `table.pose.position[2]` as the height threshold despite describing it as the table top. Reconcile height/contact details before comparing outcomes. Neither check requires uninterrupted placement. |
+| Success rule | Matches the pinned SIMPLE checker: no hand/box contact, box/table contact within 0.05 m of table center Z 0.4, box center at or above 0.4, and accumulated placement time strictly above 0.9 s. Uses registered contacts without an extra distance filter and FP64 accumulation to match Python floats. | Upstream uses `table.pose.position[2]` despite describing it as the table top. Neither check requires uninterrupted placement. Contact generation and closed-loop outcomes still depend on the remaining physics differences. |
 
 The compiled physical parameters were verified unchanged by the visual work.
 That establishes isolation of this change, not physical parity with SIMPLE.

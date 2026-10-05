@@ -52,7 +52,8 @@ convenient diagnostic budget. Per-episode budgets are needed for exact parity.
 The box mass, box/table friction and contact dimensions, box `solref`, and table
 priority have now been changed to the reference values in the asset XML files.
 Compiling both assets with MuJoCo confirms the new mass and contact parameters.
-Body actuation, initialization, and success checking remain as described below.
+Body actuation and initialization remain as described below. Success checking
+has subsequently been aligned with the reference, as described below.
 The replay measurements in this document were taken **before** these changes;
 a new replay is needed to measure their effect.
 
@@ -65,9 +66,14 @@ whereas the local configuration uses MuJoCo position actuators.
 
 Box/table sizes and table position agree with saved episode 0: table full size
 `(1.25, 0.78999733, 0.1)`, center `(0.3, 0, 0.4)`. Local Y half-extent is rounded
-to `0.395`. The local table top is at Z 0.45. The reference success checker uses
-table center Z 0.4 with a contact-height tolerance; local uses 0.45 and additionally
-filters contact distance. Success-checker parity remains a separate issue.
+to `0.395`. The local table top is at Z 0.45. Both success checkers now use
+table center Z 0.4 with a contact-height tolerance of 0.05, require no hand contact
+and box center Z at least 0.4, and scan registered contacts without another
+distance filter. Local placement time now accumulates in FP64 to reproduce
+SIMPLE's Python-float arithmetic and strict > 0.9 s boundary. A focused scalar
+reference test covers contact-height boundaries, hand contact, inactive contact
+slots, interrupted placement, and the 45-step threshold. The local pelvis-height
+failure rule and evaluation budgets still differ from the official evaluator.
 
 These differences can affect lift forces, grasp friction, joint tracking, and
 release. Their individual contribution to replay failure has not been isolated.

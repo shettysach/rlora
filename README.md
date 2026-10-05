@@ -10,6 +10,9 @@ order as the [published evaluation data](https://huggingface.co/datasets/USC-PSI
 
 The task succeeds after the box is released onto the table's upper surface for
 over 0.9 seconds, matching the [SIMPLE task](https://github.com/physical-superintelligence-lab/SIMPLE/blob/main/src/simple/tasks/g1_wholebody_xmove_bend_carry_box_sonic.py).
+The checker preserves SIMPLE's table-center height reference (Z 0.4), registered
+contact checks, and Python-float placement-time arithmetic. Placement time need
+not be consecutive; any hand/box contact prevents accumulation for that step.
 `--mode replay` feeds recorded actions to the decoder. `--mode policy` runs the
 published fine-tuned Psi0 checkpoint directly for action chunks. Both modes execute
 body and hand actions in MJLab.
