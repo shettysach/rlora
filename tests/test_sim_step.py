@@ -129,6 +129,8 @@ def test_torque_control_recomputes_each_physics_substep(monkeypatch):
     def capture(effort, joint_ids):
         q = env.robot.data.joint_pos.index_select(-1, joint_ids)
         dq = env.robot.data.joint_vel.index_select(-1, joint_ids)
+        hand_target = env.last_target[:, 29:]
+        assert torch.all((hand_target - q[:, 29:]).abs() <= 0.25 + 1e-6)
         expected = torch.clamp(
             env.motor_kp * (env.last_target - q) - env.motor_kd * dq,
             -env.motor_limit,

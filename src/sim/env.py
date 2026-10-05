@@ -45,6 +45,17 @@ class MjlabEnv:
         self.motor_kp = torch.as_tensor(kp, device=self.device)
         self.motor_kd = torch.as_tensor(kd, device=self.device)
         self.motor_limit = torch.as_tensor(limits, device=self.device)
+        # Dex3's default close ratio is 1.0. Its writer also limits each
+        # published target to 0.25 rad from the latest measured hand position.
+        self.hand_min = torch.tensor(
+            (-1.05, -0.724, 0, -1.57, -1.75, -1.57, -1.75)
+            + (-1.05, -1.05, -1.75, 0, 0, 0, 0),
+            device=self.device,
+        )
+        self.hand_max = torch.tensor(
+            (1.05, 1.05, 1.75, 0, 0, 0, 0) + (1.05, 0.742, 0, 1.57, 1.75, 1.57, 1.75),
+            device=self.device,
+        )
         self.last_target = torch.empty(num_envs, 43, device=self.device)
         self.last_torque = torch.empty_like(self.last_target)
         model = self.env.sim.mj_model
@@ -151,7 +162,7 @@ class MjlabEnv:
         """Advance physics; the runtime owns episode outcomes and resets."""
         hand_action = hand_action.index_select(-1, self.mjlab_hand_from_psi0)
         env = self.env
-        self.last_target = torch.cat(
+        raw_target = torch.cat(
             (
                 self.robot.data.default_joint_pos.index_select(-1, self.body_joint_ids)
                 + body_action * self.body_scale,
@@ -159,6 +170,7 @@ class MjlabEnv:
             ),
             dim=-1,
         )
+        self.last_target = raw_target
         if self.actuation == "position":
             env.action_manager.process_action(
                 torch.cat((body_action, hand_action), dim=-1).to(self.device)
@@ -174,9 +186,27 @@ class MjlabEnv:
                 joint_vel = self.robot.data.joint_vel.index_select(
                     -1, self.planner_joint_ids
                 )
+                # Approximate Dex3's 500 Hz publication using the latest state
+                # available at each 5 ms physics substep.
+                hand_target = raw_target[:, 29:]
+                hand_target = torch.where(
+                    (hand_target > self.hand_max) & (self.hand_max > 0),
+                    self.hand_max,
+                    hand_target,
+                )
+                hand_target = torch.where(
+                    (hand_target < self.hand_min) & (self.hand_min < 0),
+                    self.hand_min,
+                    hand_target,
+                )
+                hand_target = hand_target.clamp(
+                    min=joint_pos[:, 29:] - 0.25,
+                    max=joint_pos[:, 29:] + 0.25,
+                )
+                target = torch.cat((raw_target[:, :29], hand_target), dim=-1)
+                self.last_target = target
                 self.last_torque = torch.clamp(
-                    self.motor_kp * (self.last_target - joint_pos)
-                    - self.motor_kd * joint_vel,
+                    self.motor_kp * (target - joint_pos) - self.motor_kd * joint_vel,
                     -self.motor_limit,
                     self.motor_limit,
                 )
