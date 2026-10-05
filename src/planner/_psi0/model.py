@@ -491,6 +491,8 @@ class Psi0Model(nn.Module):
         states: torch.Tensor,
         instructions: list[str],
         num_inference_steps: int,
+        prev_actions: torch.Tensor | None = None,
+        execution_horizon: int | None = None,
     ) -> torch.Tensor:
         views, states, attention_mask = self._conditioning(
             observations, states, instructions
@@ -511,14 +513,49 @@ class Psi0Model(nn.Module):
             self.scheduler.set_timesteps(num_inference_steps)
             self.scheduler.set_begin_index(0)
             timesteps = cast(torch.Tensor, self.scheduler.timesteps)
+            if prev_actions is not None:
+                # Synchronous test-time RTC: the preceding 30-action prediction
+                # was shifted by the 24 actions already executed. The remaining
+                # six actions guide the overlap; no inference delay accrued.
+                overlap = self.horizon - cast(int, execution_horizon)
+                indices = torch.arange(overlap, device=self.device)
+                fraction = (overlap - indices).float() / (overlap + 1)
+                weights = fraction * (torch.exp(fraction) - 1) / (math.e - 1)
+                mask = F.pad(weights, (0, self.horizon - overlap))[None, :, None]
             for timestep in timesteps:
                 batch_timestep = timestep.expand(states.shape[0]).to(self.device)
-                prediction = self.action_header(
-                    action,
-                    context,
-                    batch_timestep,
-                    joint_mask,
-                )
+                if prev_actions is None:
+                    prediction = self.action_header(
+                        action, context, batch_timestep, joint_mask
+                    )
+                else:
+                    with torch.enable_grad():
+                        sample = action.detach().requires_grad_(True)
+                        prediction = self.action_header(
+                            sample, context, batch_timestep, joint_mask
+                        )
+                        sigma = self.scheduler.sigmas[
+                            self.scheduler.index_for_timestep(timestep)
+                        ]
+                        predicted_clean = sample - sigma * prediction
+                        error = (prev_actions - predicted_clean.detach()) * mask
+                        correction = torch.autograd.grad(
+                            predicted_clean, sample, grad_outputs=error
+                        )[0]
+                    if sigma.item() < 1.0:
+                        dims = (-2, -1)
+                        correction_norm = correction.norm(dim=dims, keepdim=True)
+                        scale = (
+                            0.9
+                            * error.norm(dim=dims, keepdim=True)
+                            / (sigma * correction_norm.clamp_min(1e-8))
+                        )
+                        correction = torch.where(
+                            correction_norm < 1e-8, 0, scale * correction
+                        )
+                        prediction = prediction.detach() - correction
+                    else:
+                        prediction = prediction.detach()
                 step = cast(
                     FlowMatchEulerDiscreteSchedulerOutput,
                     self.scheduler.step(

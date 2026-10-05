@@ -78,7 +78,10 @@ The [task-specific checkpoint](https://huggingface.co/USC-PSI-Lab/psi-model/tree
 at step 40000 uses the original 43D-state, six-block action head. This branch
 loads that head and its Qwen3-VL weights in process, generates 78D actions,
 and executes the configured 30 actions per prediction using plain flow inference.
-RTC guidance is disabled for this probe.
+Pass `--rtc` to use test-time RTC: the first prediction is plain, then each
+30-action prediction uses the preceding chunk's six unexecuted actions for
+continuity and executes 24 actions. This synchronous path uses zero inference
+delay and defaults to ten flow steps; `--inference-steps` can override it.
 Control steps run MJLab's action manager and physics substeps directly. Episode
 outcomes and resets are handled by the runtime, avoiding the general RL step's
 per-step reset-index synchronization. This scene has only actions and reset events.
@@ -98,7 +101,7 @@ MUJOCO_GL=egl uv run --extra cu128 --frozen python src/runtime.py \
   --psi-run-dir artifacts/psi-model/psi0/simple-checkpoints/sonic-wbcbox.neckle.flow1000.cosine.lr1.0e-04.b256.gpus8.2608260223 \
   --qwen-model artifacts/qwen3-vl-2b \
   --eval-archive "$ARCHIVE" --episode-indices 0 \
-  --prompt 'xmove to the table and bend to pick up the box'
+  --actuation torque --rtc --max-steps 1700
 ```
 
 The runtime keeps placement and fall checks on the GPU and checks batch termination
@@ -106,10 +109,9 @@ between action chunks. It does not collect diagnostics, timings, metrics, or vid
 The visual assets live in `assets/`. The default scene uses the actual HSSD
 room geometry and authored diffuse textures from SIMPLE's default
 `mujoco_isaac` evaluation, rendered entirely by native MuJoCo. It includes the
-Isaac box markings and approximates episode 0's lighting and Pearl tabletop.
+Isaac box markings and approximates each episode's recorded lighting and table material.
 MuJoCo approximates the MDL/PBR materials and area lights; pixel equivalence to
-Isaac RTX is not established. Other episodes' task lighting/material variations
-are not replayed yet. See [assets/hssd/UPSTREAM.md](assets/hssd/UPSTREAM.md).
+Isaac RTX is not established. See [assets/hssd/UPSTREAM.md](assets/hssd/UPSTREAM.md).
 Physics and closed-loop success-rate parity still require validation on the
 target system. The published checker-floor reference videos use a different
 visual backend from the current default official evaluator.

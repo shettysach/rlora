@@ -33,10 +33,9 @@ a different visual backend. Their initial states and action sequences remain
 useful for initialization and replay; matching those videos does not establish
 agreement with the current default evaluation's images.
 
-MuJoCo approximates MDL/PBR materials and cylinder lights. Episode 0 supplies
-the current task lighting and Pearl slab material. Other recorded episodes'
-appearance variations are not replayed, and no comparison against actual Isaac
-RGB or closed-loop policy success is claimed.
+MuJoCo approximates MDL/PBR materials and cylinder lights. The saved lighting
+and slab material choice are applied per episode. No comparison against actual
+Isaac RGB or closed-loop policy success is claimed.
 
 ## Remaining differences
 
@@ -47,7 +46,7 @@ RGB or closed-loop policy success is claimed.
 | Physical model and actuation | Batched torque control recomputes clipped PD torque every 5 ms; position actuators remain the default pending full replay validation. Box/contact settings, solver `impratio=10`, and elliptic friction cone match the pinned SIMPLE builder. | The available ONNX bundle has joint actions but no external `LowCmd` trace. Desired motor velocity and feedforward torque are assumed zero, and local MJLab gains/limits are reused. Two no-slip solver iterations remain unsupported in MuJoCo Warp. Exact motor and replay parity remain unverified. |
 | Initial velocity | Restores recorded base pose, joint positions, box pose, and base velocity; joint velocities remain zero. | Official evaluation similarly zeroes joint velocities and restores `observation.base_vel`. |
 | Controller startup | Cold SONIC history by default; an optional 152-step static-pose prefill is available for A/B comparison. | Official evaluator runs a 152-boundary external-controller initialization sequence while holding the start pose, then restores the episode. Static-pose ONNX prefill is only an approximation. |
-| Replanning | Executes the checkpoint's 30 actions per prediction, or 0.60 s; plain flow inference. | Documented RTC configuration executes 24, or 0.48 s, with RTC guidance. Observation frequency differs independently of guidance. |
+| Replanning | Plain flow executes 30 actions per prediction. `--rtc` executes 24 per 30-action prediction and guides the six-action overlap using the previous normalized chunk, with zero inference delay and ten flow steps by default. | The documented RTC configuration executes 24 actions, but the official server/client has an external lockstep path. Closed-loop outcome parity is untested. |
 | Episode budget | Default 800 steps, or 16 s. | Current policy evaluator uses `max(2 × demonstration length, 1500)`, at least 30 s. |
 | Failure rule | Pelvis height below 0.5 m records failure. | Official evaluation loop has no equivalent height-based termination; bending can trigger a local failure. |
 | Success rule | Matches the pinned SIMPLE checker: no hand/box contact, box/table contact within 0.05 m of table center Z 0.4, box center at or above 0.4, and accumulated placement time strictly above 0.9 s. Uses registered contacts without an extra distance filter and FP64 accumulation to match Python floats. | Upstream uses `table.pose.position[2]` despite describing it as the table top. Neither check requires uninterrupted placement. Contact generation and closed-loop outcomes still depend on the remaining physics differences. |

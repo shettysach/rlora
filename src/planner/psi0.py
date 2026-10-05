@@ -20,12 +20,15 @@ class Psi0Planner:
         qwen_model: Path,
         device: str = "cuda",
         inference_steps: int = 10,
+        rtc: bool = False,
     ) -> None:
         self.device = torch.device(device)
         self.inference_steps = inference_steps
+        self.rtc = rtc
         saved = json.loads((run_dir / "run_config.json").read_text())
         config = saved["model"]
-        self.exec_horizon = config["action_exec_horizon"]
+        self.exec_horizon = 24 if rtc else config["action_exec_horizon"]
+        self.previous_actions: torch.Tensor | None = None
         field = saved["data"]["transform"]["field"]
         image_config = saved["data"]["transform"]["model"]
         self.image_transform = v2.Compose(
@@ -70,7 +73,17 @@ class Psi0Planner:
             states=states,
             instructions=instructions,
             num_inference_steps=self.inference_steps,
+            prev_actions=self.previous_actions,
+            execution_horizon=self.exec_horizon if self.rtc else None,
         ).float()
+        if self.rtc:
+            self.previous_actions = torch.cat(
+                (
+                    actions[:, self.exec_horizon :],
+                    torch.zeros_like(actions[:, : self.exec_horizon]),
+                ),
+                dim=1,
+            )
         output = (
             0.5 * (actions + 1) * (self.action_max - self.action_min) + self.action_min
         )

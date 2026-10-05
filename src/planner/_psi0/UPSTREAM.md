@@ -14,7 +14,9 @@ their checkpoint precision. VLM conditioning reads the backbone's final features
 without computing language logits, collecting layer outputs, or retaining a KV cache.
 The unused final language norm is bypassed to preserve the causal wrapper's
 last decoder features in the pinned Transformers version.
-Sampling uses plain flow inference without RTC guidance or previous-action state.
+Sampling uses plain flow inference by default. Optional synchronous test-time RTC
+uses the upstream exponential overlap mask and clean-action gradient guidance;
+the planner retains the previous normalized chunk for the next prediction.
 Fixed context projection and the joint attention mask are computed once per
 prediction and reused across denoising steps. Checkpoint parameter names are unchanged.
 Image and text preprocessing use one processor call for the environment batch,

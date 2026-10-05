@@ -103,6 +103,7 @@ def run(args: argparse.Namespace) -> None:
                 args.qwen_model,
                 device=args.device,
                 inference_steps=args.inference_steps,
+                rtc=args.rtc,
             )
         with env.compute_context():
             terminal_steps = torch.zeros(count, dtype=torch.int32, device=env.device)
@@ -222,6 +223,11 @@ def main() -> None:
         "--qwen-model", type=Path, default=Path("artifacts/qwen3-vl-2b")
     )
     parser.add_argument("--inference-steps", type=int, default=10)
+    parser.add_argument(
+        "--rtc",
+        action="store_true",
+        help="Test-time RTC with 24 executed actions per chunk",
+    )
     parser.add_argument("--prompt", help="Override the recorded task instruction")
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
@@ -236,6 +242,8 @@ def main() -> None:
         parser.error("--max-steps must be positive")
     if len(set(args.episode_indices)) != len(args.episode_indices):
         parser.error("--episode-indices must be distinct")
+    if args.inference_steps < 1:
+        parser.error("--inference-steps must be positive")
     run(args)
 
 
