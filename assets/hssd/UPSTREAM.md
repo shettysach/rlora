@@ -12,8 +12,9 @@ Runtime rendering and simulation require only MuJoCo/MJLab.
   `src/simple/scenes/hssd.py`, and `src/simple/resources/hssd-scenes/config.yaml`.
 - [SIMPLE asset archive](https://huggingface.co/datasets/USC-PSI-Lab/SIMPLE/resolve/1ce0fa3956706b408df2c7c0e26b0298aa7411fd/scenes_hssd_107734119_175999932.zip),
   revision `1ce0fa3956706b408df2c7c0e26b0298aa7411fd`.
-- Episode 0's saved `environment_config` from the published carry-box archive
-  supplies the fixed room placement, six light positions, and Pearl table material.
+- Episode 0's saved `environment_config` supplies the room placement and the
+  baseline light and Pearl table appearance. Each evaluation episode also saves
+  its own six lights and table material choice.
 - HSSD attribution and CC BY-NC 4.0 terms are in [LICENSE.md](LICENSE.md).
 
 ## Conversion
@@ -38,9 +39,11 @@ MuJoCo engine builds task actors and the ground plane rather than HSSD room
 collision meshes. The existing robot, box, table, and floor dynamics are retained.
 A mocap root gives the room the correct per-environment origin in MJLab.
 
-`assets/simple/scene.xml` approximates episode 0's six cylinder lights with
-native spot lights at their saved world positions. `table.xml` approximates
-Pearl; `box.xml` includes the Isaac engine's nine render-only tape/ink markings.
+`assets/simple/scene.xml` approximates six cylinder lights with native spot
+lights. At render time their positions and relative brightness/color follow the
+saved episode. `table.xml` supplies the baseline Pearl material; the renderer
+selects a classic-MuJoCo approximation of each episode's saved MDL material.
+`box.xml` includes the Isaac engine's nine render-only tape/ink markings.
 Camera clipping matches the inspected Isaac implementation's hard-coded
 0.01–10 m range. The prior calibrated camera mount and projection are retained.
 
@@ -65,8 +68,9 @@ The converter repairs the archive's absolute `/props` references and its
 MuJoCo's classic renderer approximates Isaac's MDL/PBR materials, reflections,
 normal maps, transmission, cylinder area lights, and tone mapping. This is a
 geometry/texture port, not a claim of pixel equivalence to RTX rendering.
-The task lighting and slab material currently use episode 0's appearance; other
-recorded episodes have different lighting and MDL materials that are not replayed.
+Saved episode lighting and table material choices are replayed. The conversion
+still approximates light intensity/color temperature and uses hand-tuned solid
+table materials; cylinder length/radius and Isaac's MDL shading are not reproduced.
 Native RGB remains sequential and uses host state transfers listed in
 [PERF.md](../../PERF.md). Full physics and policy parity are still outstanding.
 

@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from mjlab.envs import ManagerBasedRlEnv
 
+from carry_box_data import LIGHT_NAMES, REFERENCE_LIGHT_COLOR, Appearance
 from shared.g1 import BODY_JOINTS, HAND_JOINTS, MJLAB_HAND_FROM_PSI0
 from shared.state import RobotState
 from sim.config import make_env_cfg
@@ -17,8 +18,10 @@ class MjlabEnv:
         self,
         num_envs: int,
         device: str = "cuda",
+        appearances: list[Appearance] | None = None,
     ):
         self.device = torch.device(device)
+        self.appearances = appearances
         self.env = ManagerBasedRlEnv(
             cfg=make_env_cfg(num_envs),
             device=device,
@@ -77,6 +80,12 @@ class MjlabEnv:
             self._render_free_joints = model.jnt_qposadr[
                 model.jnt_type == mujoco.mjtJoint.mjJNT_FREE  # ty: ignore[unresolved-attribute]
             ]
+            if self.appearances is not None:
+                self._render_light_ids = [
+                    model.light(f"simple/{name}").id for name in LIGHT_NAMES
+                ]
+                self._render_table_geom = model.geom("table/collision").id
+                self._render_table_material = model.mat("table/pearl").id
         with self.compute_context():
             data = self.env.sim.data
             qpos = data.qpos.cpu().numpy()
@@ -88,9 +97,25 @@ class MjlabEnv:
                 self._render_static = origins, mocap_pos, mocap_quat
         origins, mocap_pos, mocap_quat = self._render_static
         images = np.empty((self.env.num_envs, 360, 640, 3), dtype=np.uint8)
-        for image, positions, mc_pos, mc_quat, origin in zip(
-            images, qpos, mocap_pos, mocap_quat, origins
+        for index, (image, positions, mc_pos, mc_quat, origin) in enumerate(
+            zip(images, qpos, mocap_pos, mocap_quat, origins)
         ):
+            if self.appearances is not None:
+                appearance = self.appearances[index]
+                ids = self._render_light_ids
+                model.light_pos[ids] = appearance.light_positions
+                color_scale = appearance.light_diffuse / REFERENCE_LIGHT_COLOR
+                model.light_diffuse[ids] = appearance.light_diffuse
+                model.light_ambient[ids] = color_scale * (0.025, 0.028, 0.035)
+                model.light_specular[ids] = color_scale * 0.12
+                model.geom_rgba[self._render_table_geom] = appearance.table_rgba
+                model.mat_rgba[self._render_table_material] = appearance.table_rgba
+                model.mat_specular[self._render_table_material] = (
+                    appearance.table_specular
+                )
+                model.mat_shininess[self._render_table_material] = (
+                    appearance.table_shininess
+                )
             self._render_data.qpos[:] = positions
             # Rebase each world so its camera sees the room at the same local pose.
             for address in self._render_free_joints:

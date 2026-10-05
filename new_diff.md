@@ -9,3 +9,21 @@
 4. **Other differences.** SIMPLE uses different global contact solver settings (`impratio=10`, elliptic cone, two no-slip iterations) and explicitly stiffens hand-geom contacts. MJLab currently uses its defaults. SIMPLE’s external SONIC command timing and hand commands may also differ from our direct decoder path. For policy runs, native MuJoCo images and fixed local lighting differ from SIMPLE’s Isaac rendering and episode appearance. The episode budget and our additional fall rule affect reported outcomes. See [differences.md](/home/sword/Desktop/USC/lab/rlora/differences.md:42).
 
 My order would be: **compare replay joint and box trajectories first**, then align contact solver and hand settings, then address controller warmup and effort control. Once replay behavior is understood, evaluate RTC and rendering for policy runs.
+
+---
+
+2. Initialization. Both paths restore the recorded pose and joints.
+     SIMPLE also restores the recorded base velocity. For the first
+     episode, it runs 152 controller boundaries while holding the robot at
+     its starting pose, resets the scene, then begins playback. That primes
+     the external controller without advancing the episode. Locally, base
+     velocity is zero and SONIC history starts empty. The recorded initial
+     velocities are small, so controller state is the more plausible
+     effect. SIMPLE evaluation sequence.
+
+  3. RTC. Correct: it is unimplemented here. RTC cannot explain replay
+     differences, because replay uses recorded actions. It can affect
+     policy evaluation: the documented SIMPLE setup uses test-time RTC and
+     executes 24 actions per chunk. Our policy runs plain sampling and
+     executes 30; the reference server uses 8 denoising steps while our
+     default is 10.

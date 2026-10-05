@@ -30,7 +30,9 @@ def _reference_chunk(episodes: list[Episode], start: int, length: int) -> np.nda
 def run(args: argparse.Namespace) -> None:
     episodes = load_episodes(args.eval_archive, args.episode_indices)
     count = len(episodes)
-    env = MjlabEnv(count, device=args.device)
+    env = MjlabEnv(
+        count, device=args.device, appearances=[e.appearance for e in episodes]
+    )
     viewer = None
     planner = None
     controller = None
