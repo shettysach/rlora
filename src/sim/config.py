@@ -141,8 +141,10 @@ def motor_parameters() -> tuple[list[float], list[float], list[float], list[floa
             if name in BODY_JOINTS
             else 1.0
         )
-        kp.append(actuator.stiffness)
-        kd.append(actuator.damping)
+        # The external Dex3 command starts with these gains; position actuators
+        # retain their MJLab settings in _position_actuators().
+        kp.append(actuator.stiffness if name in BODY_JOINTS else 1.5)
+        kd.append(actuator.damping if name in BODY_JOINTS else 0.1)
         limits.append(cast(float, actuator.effort_limit))
     return scales, kp, kd, limits
 
