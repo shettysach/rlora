@@ -68,6 +68,7 @@ def test_success_matches_simple_contact_rule_and_python_accumulation(
         # Pause placement for five steps; accumulated time must not reset.
         positions[0, 2] = 0.2 if 15 <= step < 20 else 0.449
         hand_contact = [False] * count
+        table_any = [False] * count
         table_contact = [False] * count
         for (first, second), world, pos in zip(
             contacts.geom[:9].tolist(),
@@ -77,18 +78,23 @@ def test_success_matches_simple_contact_rule_and_python_accumulation(
             # Independent scalar reference: SIMPLE scans registered contacts,
             # casts their height to Python float, and ignores contact distance.
             hand_contact[world] |= {first, second} == {box, hand}
+            table_any[world] |= {first, second} == {box, table}
             table_contact[world] |= {first, second} == {box, table} and abs(
                 float(pos[2]) - 0.4
             ) <= 0.05
-        for world, pose in enumerate(poses.tolist()):
-            if (
-                table_contact[world]
-                and not hand_contact[world]
-                and float(pose[2]) >= 0.4
-            ):
+        placed = [
+            table_contact[world] and not hand_contact[world] and pose[2] >= 0.4
+            for world, pose in enumerate(poses.tolist())
+        ]
+        for world in range(count):
+            if placed[world]:
                 elapsed[world] += 0.02
             succeeded[world] |= elapsed[world] > 0.9
         task.update()
+        assert task.hand_contact.tolist() == hand_contact
+        assert task.table_contact.tolist() == table_any
+        assert task.table_height_contact.tolist() == table_contact
+        assert task.placed.tolist() == placed
         torch.testing.assert_close(
             task.placement_time_s,
             torch.tensor(elapsed, dtype=torch.float64, device=device),

@@ -43,7 +43,7 @@ class CarryBoxTask:
         self.success = torch.zeros(count, dtype=torch.bool, device=self.env.device)
         self.fell = torch.zeros_like(self.success)
 
-    def _contacts(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def _contacts(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         data = self.env.env.sim.wp_data
         active = self.contact_indices < wp.to_torch(data.nacon)[0]
         geom = wp.to_torch(data.contact.geom)
@@ -54,23 +54,33 @@ class CarryBoxTask:
         hand_mask = (box_first & torch.isin(geom[:, 1], self.hand_geoms)) | (
             box_second & torch.isin(geom[:, 0], self.hand_geoms)
         )
-        table_mask = (
-            (box_first & (geom[:, 1] == self.table_geom))
-            | (box_second & (geom[:, 0] == self.table_geom))
-        ) & ((pos[:, 2].double() - TABLE_CENTER_Z).abs() <= 0.05)
+        table_mask = (box_first & (geom[:, 1] == self.table_geom)) | (
+            box_second & (geom[:, 0] == self.table_geom)
+        )
+        table_height_mask = table_mask & (
+            (pos[:, 2].double() - TABLE_CENTER_Z).abs() <= 0.05
+        )
         # SIMPLE scans all registered contacts without another distance filter.
         hand_mask &= active
         table_mask &= active
+        table_height_mask &= active
         hand = torch.zeros_like(self.placement_time_s, dtype=torch.int32)
         table = torch.zeros_like(hand)
+        table_height = torch.zeros_like(hand)
         hand.scatter_add_(0, world, hand_mask.int())
         table.scatter_add_(0, world, table_mask.int())
-        return hand > 0, table > 0
+        table_height.scatter_add_(0, world, table_height_mask.int())
+        return hand > 0, table > 0, table_height > 0
 
     def update(self) -> None:
         box = self.env.box_pose()
-        hand_contact, table_contact = self._contacts()
-        placed = table_contact & ~hand_contact & (box[:, 2].double() >= TABLE_CENTER_Z)
-        self.placement_time_s += placed.double() * self.env.step_dt
+        self.hand_contact, self.table_contact, self.table_height_contact = (
+            self._contacts()
+        )
+        self.box_height_ok = box[:, 2].double() >= TABLE_CENTER_Z
+        self.placed = (
+            self.table_height_contact & ~self.hand_contact & self.box_height_ok
+        )
+        self.placement_time_s += self.placed.double() * self.env.step_dt
         self.success |= self.placement_time_s > SUCCESS_PLACEMENT_TIME_S
         self.fell |= self.env.robot.data.root_link_pos_w[:, 2] < 0.5

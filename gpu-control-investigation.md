@@ -89,3 +89,28 @@ actions per 30-action chunk) and compare policy evaluation outcomes.
 Sources: [released fine-tune configuration](https://huggingface.co/USC-PSI-Lab/psi-model/commit/7e3076049dd86c322d2ca19e6c0288b1ec25c61b),
 [SIMPLE replay control path](https://github.com/physical-superintelligence-lab/SIMPLE/blob/6d10628794d9c7de4596b4f2afb2c054a637c2bc/src/simple/agents/replay_wbc_agent.py),
 [SIMPLE policy evaluation setup](https://psi-lab.ai/SIMPLE/docs/sonic-wbc/evaluation.html).
+
+## Follow-up: why placement never succeeds
+
+The first GPU comparison found zero successes even where the box remained near
+table height. After updating this repository, rerun the best tracking variant
+with the new placement fields in the trace:
+
+```sh
+ARCHIVE=artifacts/psi-data/simple-eval/G1WholebodyXMoveBendCarryBoxSonic-v0.zip
+MUJOCO_GL=egl uv run --extra cu128 --frozen python src/runtime.py --mode replay \
+  --eval-archive "$ARCHIVE" --episode-indices 0 1 2 3 4 \
+  --seed 0 --max-steps 1700 --actuation torque --startup cold --control-delay 0 \
+  --trace-output artifacts/control/torque-placement.npz
+uv run --extra cu128 --frozen python tools/compare_replay_trace.py \
+  --eval-archive "$ARCHIVE" --trace artifacts/control/torque-placement.npz
+```
+
+For each episode, the comparison now prints counts of steps with hand contact,
+any box/table contact, box/table contact at the checker's required height, box
+center high enough, and the complete placement predicate. It also prints the
+accumulated placement time. If the box appears to rest on the table but
+`table_contact=0`, inspect contact reporting; if `table_contact` is positive but
+`table_height_contact=0`, inspect contact heights. If hand contact persists,
+inspect release behavior. If `placed` occurs for fewer than 46 steps, the 0.9 s
+success threshold has not been met. Older NPZ traces do not contain these fields.

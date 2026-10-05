@@ -68,6 +68,21 @@ def main() -> None:
                 f"max_abs_torque={np.abs(torque).max():.2f}, "
                 f"success={bool(trace['success'][column])}"
             )
+            if "placed" in trace:
+                print(
+                    "  placement steps: "
+                    + ", ".join(
+                        f"{name}={np.count_nonzero(trace[name][:, column])}"
+                        for name in (
+                            "hand_contact",
+                            "table_contact",
+                            "table_height_contact",
+                            "box_height_ok",
+                            "placed",
+                        )
+                    )
+                    + f", accumulated_s={trace['placement_time_s'][-1, column]:.3f}"
+                )
 
 
 if __name__ == "__main__":

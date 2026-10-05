@@ -143,6 +143,15 @@ def run(args: argparse.Namespace) -> None:
                     if trace is not None:
                         trace["target"].append(env.last_target.clone())
                         trace["torque"].append(env.last_torque.clone())
+                        for name in (
+                            "hand_contact",
+                            "table_contact",
+                            "table_height_contact",
+                            "box_height_ok",
+                            "placed",
+                            "placement_time_s",
+                        ):
+                            trace[name].append(getattr(task, name).clone())
                         trace["action"].append(
                             torch.cat((applied_body, applied_hands), dim=-1).clone()
                         )
