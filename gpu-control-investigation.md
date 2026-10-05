@@ -93,17 +93,49 @@ Sources: [released fine-tune configuration](https://huggingface.co/USC-PSI-Lab/p
 ## Follow-up: why placement never succeeds
 
 The first GPU comparison found zero successes even where the box remained near
-table height. After updating this repository, rerun the best tracking variant
-with the new placement fields in the trace:
+table height. Run this entire block from the updated repository root. It checks
+the instrumentation, writes a new trace name, verifies its contents, and stops
+if the placement output is missing:
 
 ```sh
+set -euo pipefail
 ARCHIVE=artifacts/psi-data/simple-eval/G1WholebodyXMoveBendCarryBoxSonic-v0.zip
+test -f "$ARCHIVE"
+test -f artifacts/sonic/model_decoder.onnx
+rg -q '"placement_time_s"' src/runtime.py
+rg -q 'placement steps:' tools/compare_replay_trace.py
+git rev-parse --short HEAD
+mkdir -p artifacts/control
+RUN_ID=$(date +%Y%m%d-%H%M%S)
+TRACE="artifacts/control/torque-placement-${RUN_ID}.npz"
+RUN_LOG="artifacts/control/torque-placement-${RUN_ID}.log"
+COMPARE_LOG="artifacts/control/torque-placement-${RUN_ID}-comparison.log"
+test ! -e "$TRACE"
 MUJOCO_GL=egl uv run --extra cu128 --frozen python src/runtime.py --mode replay \
   --eval-archive "$ARCHIVE" --episode-indices 0 1 2 3 4 \
   --seed 0 --max-steps 1700 --actuation torque --startup cold --control-delay 0 \
-  --trace-output artifacts/control/torque-placement.npz
+  --trace-output "$TRACE" 2>&1 | tee "$RUN_LOG"
+uv run --extra cu128 --frozen python - "$TRACE" <<'PY'
+import sys
+import numpy as np
+
+with np.load(sys.argv[1], allow_pickle=False) as trace:
+    required = {
+        "hand_contact", "table_contact", "table_height_contact",
+        "box_height_ok", "placed", "placement_time_s",
+    }
+    missing = required - set(trace.files)
+    if missing:
+        raise SystemExit(f"Trace lacks placement fields: {sorted(missing)}")
+    if trace["placed"].ndim != 2 or trace["placed"].shape[1] != 5:
+        raise SystemExit(f"Unexpected placement shape: {trace['placed'].shape}")
+    if trace["placed"].shape[0] != trace["torque"].shape[0]:
+        raise SystemExit("Placement and motor traces have different step counts")
+    print(f"Verified placement fields in {sys.argv[1]}")
+PY
 uv run --extra cu128 --frozen python tools/compare_replay_trace.py \
-  --eval-archive "$ARCHIVE" --trace artifacts/control/torque-placement.npz
+  --eval-archive "$ARCHIVE" --trace "$TRACE" 2>&1 | tee "$COMPARE_LOG"
+test "$(rg -c '^  placement steps:' "$COMPARE_LOG")" = 5
 ```
 
 For each episode, the comparison now prints counts of steps with hand contact,
@@ -113,4 +145,6 @@ accumulated placement time. If the box appears to rest on the table but
 `table_contact=0`, inspect contact reporting; if `table_contact` is positive but
 `table_height_contact=0`, inspect contact heights. If hand contact persists,
 inspect release behavior. If `placed` occurs for fewer than 46 steps, the 0.9 s
-success threshold has not been met. Older NPZ traces do not contain these fields.
+success threshold has not been met. Send the five `placement steps:` lines and
+the run's commit hash. If any command fails, send the error and the new trace's
+field list; do not report an older comparison as this run's result.
