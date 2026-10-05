@@ -11,8 +11,8 @@ published 78D action contains a 64D token and 14 hand targets; it does not
 include the external controller's `LowCmd`. The torque path uses the local G1
 actuator gains and effort limits, assumes desired motor velocity and feedforward
 torque are zero, and keeps the same decoder. These assumptions require a real
-`LowCmd` trace to verify. The optional static history warmup and one-step delay
-are diagnostics, not calibrated replacements for the external controller.
+`LowCmd` trace to verify. The optional static history warmup is a diagnostic,
+not a calibrated replacement for the external controller.
 
 Run from the repository root on the GPU device, replacing the archive path if
 needed:
@@ -35,6 +35,6 @@ The trace records one initial state and one post-action state per control step,
 plus the applied targets and final-substep motor torques. The comparison aligns
 trace state 0 with recorded observation 0. Check first-100-frame joint RMSE,
 full joint and box trajectories, saturation, lift timing, and success. To isolate
-the optional timing approximations, repeat a torque replay with
-`--startup static-152` or `--control-delay 1`, changing only one option at a time.
+the optional startup approximation, repeat a torque replay with
+`--startup static-152`.
 The scene viewer and policy runs use the selected actuation mode too.

@@ -28,8 +28,7 @@ def main() -> None:
         ZipFile(args.eval_archive) as archive,
     ):
         print(
-            f"actuation={trace['actuation'].item()} startup={trace['startup'].item()} "
-            f"delay={trace['control_delay'].item()}"
+            f"actuation={trace['actuation'].item()} startup={trace['startup'].item()}"
         )
         for column, episode_index in enumerate(trace["episode_indices"]):
             data = pq.read_table(

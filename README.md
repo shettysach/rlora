@@ -65,12 +65,14 @@ uv run --extra cu128 --frozen python src/runtime.py \
 
 uv run --extra cu128 --frozen python src/runtime.py \
   --mode replay --eval-archive "$ARCHIVE" --episode-indices 0 \
-  --max-steps 800 --viewer
+  --viewer
 ```
 
 `--episode-indices 0 1 2 3 4` runs the five published initial states as one
 batch. `--viewer` enables the passive viewer; omit it for throughput.
-`--max-steps 50` is a quick smoke run.
+Replay defaults to each recording's length plus 10 steps. Policy evaluation
+defaults to the larger of twice that length or 1,500 steps. `--max-steps 50`
+caps each episode for a quick smoke run.
 
 ## Run the fine-tuned policy
 
@@ -101,10 +103,10 @@ MUJOCO_GL=egl uv run --extra cu128 --frozen python src/runtime.py \
   --psi-run-dir artifacts/psi-model/psi0/simple-checkpoints/sonic-wbcbox.neckle.flow1000.cosine.lr1.0e-04.b256.gpus8.2608260223 \
   --qwen-model artifacts/qwen3-vl-2b \
   --eval-archive "$ARCHIVE" --episode-indices 0 \
-  --actuation torque --rtc --max-steps 1700
+  --actuation torque --rtc
 ```
 
-The runtime keeps placement and fall checks on the GPU and checks batch termination
+The runtime keeps placement checks on the GPU and checks batch termination
 between action chunks. It does not collect diagnostics, timings, metrics, or videos.
 The visual assets live in `assets/`. The default scene uses the actual HSSD
 room geometry and authored diffuse textures from SIMPLE's default

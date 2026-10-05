@@ -92,17 +92,6 @@ class MjlabEnv:
     def box_pose(self) -> torch.Tensor:
         return self.box.data.root_link_pose_w
 
-    def hold_action(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Raw actions that hold the current joint positions for the first delayed tick."""
-        joints = self.planner_state()
-        body_default = self.robot.data.default_joint_pos.index_select(
-            -1, self.body_joint_ids
-        )
-        body = (joints[:, :29] - body_default) / self.body_scale
-        hand_order = torch.argsort(self.mjlab_hand_from_psi0)
-        hands = joints[:, 29:].index_select(-1, hand_order)
-        return body, hands
-
     def rgb(self) -> torch.Tensor:
         """Return CPU uint8 RGB [n, 360, 640, 3] without advancing physics."""
         model = self.env.sim.mj_model

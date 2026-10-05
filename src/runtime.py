@@ -45,6 +45,18 @@ def _trace_state(env: MjlabEnv, trace: dict[str, list[torch.Tensor]]) -> None:
 def run(args: argparse.Namespace) -> None:
     episodes = load_episodes(args.eval_archive, args.episode_indices)
     count = len(episodes)
+    budgets = np.array(
+        [
+            len(e.actions) + 10
+            if args.mode == "replay"
+            else max(2 * len(e.actions), 1500)
+            for e in episodes
+        ],
+        dtype=np.int32,
+    )
+    if args.max_steps is not None:
+        budgets = np.minimum(budgets, args.max_steps)
+    max_steps = int(budgets.max())
     env = MjlabEnv(
         count,
         device=args.device,
@@ -83,9 +95,6 @@ def run(args: argparse.Namespace) -> None:
                 zero_token = torch.zeros(count, 64, device=env.device)
                 for _ in range(152):
                     controller.act(reference=zero_token, robot_state=env.robot_state())
-        if args.control_delay:
-            with env.compute_context():
-                delayed_body, delayed_hands = env.hold_action()
         trace: dict[str, list[torch.Tensor]] | None = (
             defaultdict(list) if args.trace_output is not None else None
         )
@@ -94,7 +103,7 @@ def run(args: argparse.Namespace) -> None:
                 _trace_state(env, trace)
         if args.mode == "replay":
             replay_actions = torch.as_tensor(
-                _reference_chunk(episodes, 0, args.max_steps), device=args.device
+                _reference_chunk(episodes, 0, max_steps), device=args.device
             )
         if args.mode == "policy":
             planner = Psi0Planner(
@@ -108,11 +117,11 @@ def run(args: argparse.Namespace) -> None:
         with env.compute_context():
             terminal_steps = torch.zeros(count, dtype=torch.int32, device=env.device)
             succeeded = torch.zeros(count, dtype=torch.bool, device=env.device)
-            fell = torch.zeros_like(succeeded)
+            budget_steps = torch.as_tensor(budgets, device=env.device)
         executed = 0
-        while executed < args.max_steps:
+        while executed < max_steps:
             if planner is None:
-                horizon = min(30, args.max_steps - executed)
+                horizon = min(30, max_steps - executed)
                 actions = replay_actions[:, executed : executed + horizon]
             else:
                 images = env.rgb()
@@ -123,7 +132,7 @@ def run(args: argparse.Namespace) -> None:
                     env.planner_state(),
                     [args.prompt or e.instruction for e in episodes],
                 )
-                horizon = min(planner.exec_horizon, args.max_steps - executed)
+                horizon = min(planner.exec_horizon, max_steps - executed)
             if env.cuda_stream is not None:
                 env.cuda_stream.wait_stream(torch.cuda.current_stream(env.device))
             for index in range(horizon):
@@ -133,12 +142,7 @@ def run(args: argparse.Namespace) -> None:
                         reference=reference[:, :64], robot_state=env.robot_state()
                     )
                     hands = reference[:, 64:78]
-                    if args.control_delay:
-                        applied_body, applied_hands = delayed_body, delayed_hands
-                        delayed_body, delayed_hands = joints, hands
-                    else:
-                        applied_body, applied_hands = joints, hands
-                    env.step(applied_body, applied_hands)
+                    env.step(joints, hands)
                     executed += 1
                     task.update()
                     if trace is not None:
@@ -154,13 +158,14 @@ def run(args: argparse.Namespace) -> None:
                         ):
                             trace[name].append(getattr(task, name).clone())
                         trace["action"].append(
-                            torch.cat((applied_body, applied_hands), dim=-1).clone()
+                            torch.cat((joints, hands), dim=-1).clone()
                         )
                         _trace_state(env, trace)
-                    newly_done = (terminal_steps == 0) & (task.success | task.fell)
+                    newly_done = (terminal_steps == 0) & (
+                        task.success | (executed >= budget_steps)
+                    )
                     terminal_steps.masked_fill_(newly_done, executed)
                     succeeded |= newly_done & task.success
-                    fell |= newly_done & task.fell
                 if viewer is not None:
                     viewer.sync()
             with env.compute_context():
@@ -170,11 +175,10 @@ def run(args: argparse.Namespace) -> None:
         with env.compute_context():
             steps = terminal_steps.cpu().tolist()
             successes = succeeded.cpu().tolist()
-            falls = fell.cpu().tolist()
-        for episode, step, success, fall in zip(episodes, steps, successes, falls):
+        for episode, step, success, budget in zip(episodes, steps, successes, budgets):
             print(
-                f"episode {episode.index}: success={success}, fell={fall}, "
-                f"terminal_step={step if step else '-'}"
+                f"episode {episode.index}: success={success}, "
+                f"terminal_step={step}, budget_steps={budget}"
             )
         if trace is not None:
             args.trace_output.parent.mkdir(parents=True, exist_ok=True)
@@ -188,11 +192,10 @@ def run(args: argparse.Namespace) -> None:
                 **samples,
                 episode_indices=np.array([e.index for e in episodes]),
                 terminal_steps=np.array(steps),
+                budget_steps=budgets,
                 success=np.array(successes),
-                fell=np.array(falls),
                 actuation=args.actuation,
                 startup=args.startup,
-                control_delay=args.control_delay,
             )
     finally:
         if controller is not None:
@@ -212,7 +215,9 @@ def main() -> None:
     )
     parser.add_argument("--eval-archive", type=Path, required=True)
     parser.add_argument("--episode-indices", type=int, nargs="+", default=[0])
-    parser.add_argument("--max-steps", type=int, default=800)
+    parser.add_argument(
+        "--max-steps", type=int, help="Optional cap on each episode's evaluation budget"
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--sonic-bundle", type=Path, default=Path("artifacts/sonic"))
     parser.add_argument(
@@ -234,11 +239,10 @@ def main() -> None:
         "--actuation", choices=("torque", "position"), default="position"
     )
     parser.add_argument("--startup", choices=("cold", "static-152"), default="cold")
-    parser.add_argument("--control-delay", type=int, choices=(0, 1), default=0)
     parser.add_argument("--trace-output", type=Path)
     parser.add_argument("--viewer", action="store_true")
     args = parser.parse_args()
-    if args.max_steps < 1:
+    if args.max_steps is not None and args.max_steps < 1:
         parser.error("--max-steps must be positive")
     if len(set(args.episode_indices)) != len(args.episode_indices):
         parser.error("--episode-indices must be distinct")

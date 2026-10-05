@@ -1,4 +1,4 @@
-"""Placement and fall checks for the SIMPLE floor-to-table box task."""
+"""Placement success check for the SIMPLE floor-to-table box task."""
 
 from __future__ import annotations
 
@@ -41,7 +41,6 @@ class CarryBoxTask:
             count, dtype=torch.float64, device=self.env.device
         )
         self.success = torch.zeros(count, dtype=torch.bool, device=self.env.device)
-        self.fell = torch.zeros_like(self.success)
 
     def _contacts(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         data = self.env.env.sim.wp_data
@@ -83,4 +82,3 @@ class CarryBoxTask:
         )
         self.placement_time_s += self.placed.double() * self.env.step_dt
         self.success |= self.placement_time_s > SUCCESS_PLACEMENT_TIME_S
-        self.fell |= self.env.robot.data.root_link_pos_w[:, 2] < 0.5

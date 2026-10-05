@@ -94,7 +94,7 @@ def test_physics_step_matches_mjlab_without_reset_index_discovery(monkeypatch, d
                         getattr(reference_state, field),
                         **tolerances,
                     )
-                for field in ("placement_time_s", "success", "fell"):
+                for field in ("placement_time_s", "success"):
                     torch.testing.assert_close(
                         getattr(task, field), getattr(reference_task, field)
                     )

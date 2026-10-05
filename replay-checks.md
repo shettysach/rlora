@@ -29,10 +29,9 @@ Robot starting poses differ. These recordings do not supply five different box
 starting positions.
 
 SIMPLE's reference evaluator budgets replay at `source_length + 10`; policy at
-`max(2 * source_length, 1500)`. Our runtime takes one shared `--max-steps` and
-holds the final recorded action when that budget exceeds a recording's length.
-For one batch covering all recordings, use at least 1605 steps; 1700 is a
-convenient diagnostic budget. Per-episode budgets are needed for exact parity.
+`max(2 * source_length, 1500)`. The runtime now uses these per-episode budgets
+and holds the final recorded action during replay's extra ten steps.
+`--max-steps` optionally caps each episode for diagnostics.
 
 ## Physical settings before the contact fix
 
@@ -73,7 +72,8 @@ distance filter. Local placement time now accumulates in FP64 to reproduce
 SIMPLE's Python-float arithmetic and strict > 0.9 s boundary. A focused scalar
 reference test covers contact-height boundaries, hand contact, inactive contact
 slots, interrupted placement, and the 45-step threshold. The local pelvis-height
-failure rule and evaluation budgets still differ from the official evaluator.
+failure rule and evaluation budgets described here were subsequently removed or
+aligned with the official evaluator.
 
 These differences can affect lift forces, grasp friction, joint tracking, and
 release. Their individual contribution to replay failure has not been isolated.
