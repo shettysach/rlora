@@ -44,6 +44,10 @@ padding changes four BF16 batch cases by up to `0.0009765625`, and two FP32
 cases by up to `2.98e-8`. The cached reference source was checked against the
 commit's Git blob hash before execution.
 
-These are component comparisons, not released-checkpoint inference validation.
-Full checkpoint weights are unavailable locally; CUDA attention execution and
-its numerical behavior remain untested here.
+Released-checkpoint CUDA checks are recorded in `checks-results.md`, with a
+reproducible harness in `tools/check_psi0.py`. On the RTX 5090 and locked
+dependencies, SDPA matches the pinned reference exactly at batches 1, 2, and 4,
+including conditioning, action blocks, and ten-step plain flow sampling.
+Those checks corrected image resizing to upstream's nearest-neighbor mode and
+retained CPU scheduler sigmas to match upstream's BF16 step arithmetic.
+FlashAttention 2 remains untested because it is unavailable in this environment.

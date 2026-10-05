@@ -507,11 +507,12 @@ class Psi0Model(nn.Module):
                 self.action_dim,
                 device=self.device,
             )
-            self.scheduler.set_timesteps(num_inference_steps, device=self.device)
+            # Match upstream's CPU scalar sigmas and BF16 step arithmetic.
+            self.scheduler.set_timesteps(num_inference_steps)
             self.scheduler.set_begin_index(0)
             timesteps = cast(torch.Tensor, self.scheduler.timesteps)
             for timestep in timesteps:
-                batch_timestep = timestep.expand(states.shape[0])
+                batch_timestep = timestep.expand(states.shape[0]).to(self.device)
                 prediction = self.action_header(
                     action,
                     context,

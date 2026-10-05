@@ -30,7 +30,10 @@ class Psi0Planner:
         image_config = saved["data"]["transform"]["model"]
         self.image_transform = v2.Compose(
             (
-                v2.Resize(image_config["resize"]["size"]),
+                v2.Resize(
+                    image_config["resize"]["size"],
+                    interpolation=v2.InterpolationMode.NEAREST,
+                ),
                 v2.CenterCrop(image_config["center_crop"]["size"]),
             )
         )
