@@ -168,7 +168,10 @@ def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
                 use_default_offset=False,
             ),
         },
-        sim=SimulationCfg(njmax=256, mujoco=MujocoCfg(timestep=0.005)),
+        sim=SimulationCfg(
+            njmax=256,
+            mujoco=MujocoCfg(timestep=0.005, impratio=10, cone="elliptic"),
+        ),
         viewer=ViewerConfig(
             distance=2.5,
             elevation=-15.0,
