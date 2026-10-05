@@ -10,7 +10,7 @@ from mjlab.envs import ManagerBasedRlEnv
 from carry_box_data import LIGHT_NAMES, REFERENCE_LIGHT_COLOR, Appearance
 from shared.g1 import BODY_JOINTS, HAND_JOINTS, MJLAB_HAND_FROM_PSI0
 from shared.state import RobotState
-from sim.config import make_env_cfg
+from sim.config import make_env_cfg, motor_parameters
 
 
 class MjlabEnv:
@@ -19,11 +19,13 @@ class MjlabEnv:
         num_envs: int,
         device: str = "cuda",
         appearances: list[Appearance] | None = None,
+        actuation: str = "position",
     ):
         self.device = torch.device(device)
         self.appearances = appearances
+        self.actuation = actuation
         self.env = ManagerBasedRlEnv(
-            cfg=make_env_cfg(num_envs),
+            cfg=make_env_cfg(num_envs, actuation=actuation),
             device=device,
             render_mode=None,
         )
@@ -37,6 +39,24 @@ class MjlabEnv:
         self.body_joint_ids = torch.as_tensor(body_ids, device=self.device)
         self.planner_joint_ids = torch.as_tensor(
             body_ids + hand_ids, device=self.device
+        )
+        scales, kp, kd, limits = motor_parameters()
+        self.body_scale = torch.as_tensor(scales[:29], device=self.device)
+        self.motor_kp = torch.as_tensor(kp, device=self.device)
+        self.motor_kd = torch.as_tensor(kd, device=self.device)
+        self.motor_limit = torch.as_tensor(limits, device=self.device)
+        self.last_target = torch.empty(num_envs, 43, device=self.device)
+        self.last_torque = torch.empty_like(self.last_target)
+        model = self.env.sim.mj_model
+        joint_ids = [
+            model.joint(f"robot/{name}").id for name in BODY_JOINTS + HAND_JOINTS
+        ]
+        self.actuator_ids = torch.as_tensor(
+            [
+                int(np.flatnonzero(model.actuator_trnid[:, 0] == joint_id)[0])
+                for joint_id in joint_ids
+            ],
+            device=self.device,
         )
         self.mjlab_hand_from_psi0 = torch.as_tensor(
             MJLAB_HAND_FROM_PSI0, device=self.device
@@ -71,6 +91,17 @@ class MjlabEnv:
 
     def box_pose(self) -> torch.Tensor:
         return self.box.data.root_link_pose_w
+
+    def hold_action(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Raw actions that hold the current joint positions for the first delayed tick."""
+        joints = self.planner_state()
+        body_default = self.robot.data.default_joint_pos.index_select(
+            -1, self.body_joint_ids
+        )
+        body = (joints[:, :29] - body_default) / self.body_scale
+        hand_order = torch.argsort(self.mjlab_hand_from_psi0)
+        hands = joints[:, 29:].index_select(-1, hand_order)
+        return body, hands
 
     def rgb(self) -> torch.Tensor:
         """Return CPU uint8 RGB [n, 360, 640, 3] without advancing physics."""
@@ -131,14 +162,40 @@ class MjlabEnv:
         """Advance physics; the runtime owns episode outcomes and resets."""
         hand_action = hand_action.index_select(-1, self.mjlab_hand_from_psi0)
         env = self.env
-        env.action_manager.process_action(
-            torch.cat((body_action, hand_action), dim=-1).to(self.device)
+        self.last_target = torch.cat(
+            (
+                self.robot.data.default_joint_pos.index_select(-1, self.body_joint_ids)
+                + body_action * self.body_scale,
+                hand_action,
+            ),
+            dim=-1,
         )
+        if self.actuation == "position":
+            env.action_manager.process_action(
+                torch.cat((body_action, hand_action), dim=-1).to(self.device)
+            )
         # This scene has only action terms and reset events. Bypass RL stepping
         # so an empty termination manager cannot cause a CUDA nonzero() wait.
         for _ in range(env.cfg.decimation):
             env._sim_step_counter += 1
-            env.action_manager.apply_action()
+            if self.actuation == "torque":
+                joint_pos = self.robot.data.joint_pos.index_select(
+                    -1, self.planner_joint_ids
+                )
+                joint_vel = self.robot.data.joint_vel.index_select(
+                    -1, self.planner_joint_ids
+                )
+                self.last_torque = torch.clamp(
+                    self.motor_kp * (self.last_target - joint_pos)
+                    - self.motor_kd * joint_vel,
+                    -self.motor_limit,
+                    self.motor_limit,
+                )
+                self.robot.set_joint_effort_target(
+                    self.last_torque, joint_ids=self.planner_joint_ids
+                )
+            else:
+                env.action_manager.apply_action()
             env.scene.write_data_to_sim()
             env.sim.step()
             env.scene.update(dt=env.physics_dt)
@@ -146,6 +203,10 @@ class MjlabEnv:
         env.common_step_counter += 1
         # mj_step leaves derived state one substep behind integration.
         env.sim.forward()
+        if self.actuation == "position":
+            self.last_torque = env.sim.data.actuator_force.index_select(
+                -1, self.actuator_ids
+            )
 
     def reset(
         self,
@@ -154,6 +215,7 @@ class MjlabEnv:
         base_pose: torch.Tensor | None = None,
         joint_pos: torch.Tensor | None = None,
         box_pose: torch.Tensor | None = None,
+        base_vel: torch.Tensor | None = None,
     ) -> None:
         self._render_static = None
         self.env.reset(seed=seed)
@@ -164,6 +226,8 @@ class MjlabEnv:
             base_pose[:, :3] += self.env.scene.env_origins
             box_pose[:, :3] += self.env.scene.env_origins
             self.robot.write_root_link_pose_to_sim(base_pose)
+            if base_vel is not None:
+                self.robot.write_root_link_velocity_to_sim(base_vel.to(self.device))
             self.robot.write_joint_state_to_sim(
                 joint_pos.to(self.device),
                 torch.zeros_like(joint_pos, device=self.device),
@@ -171,6 +235,8 @@ class MjlabEnv:
             )
             self.box.write_root_link_pose_to_sim(box_pose)
             self.env.sim.forward()
+        self.last_target.zero_()
+        self.last_torque.zero_()
 
     @property
     def step_dt(self) -> float:

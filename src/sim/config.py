@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import mujoco
-from mjlab.actuator import BuiltinPositionActuatorCfg
+from mjlab.actuator import BuiltinMotorActuatorCfg, BuiltinPositionActuatorCfg
 from mjlab.asset_zoo.robots.unitree_g1.g1_constants import (
     G1_ACTUATOR_4010,
     G1_ACTUATOR_5020,
@@ -79,7 +80,7 @@ def _scene_visuals(spec: MjSpec) -> None:
     )
 
 
-def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
+def _position_actuators():
     g1_actuator_7520_14 = replace(
         G1_ACTUATOR_7520_14,
         target_names_expr=(".*_hip_yaw_joint", "waist_yaw_joint"),
@@ -120,11 +121,52 @@ def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
             effort_limit=1.4,
         ),
     )
+    return actuators, hand_actuators
+
+
+def motor_parameters() -> tuple[list[float], list[float], list[float], list[float]]:
+    """Action scale, Kp, Kd and limits in body-then-hand action order."""
+    body, hands = _position_actuators()
+    scales, kp, kd, limits = [], [], [], []
+    for name in BODY_JOINTS + HAND_JOINTS:
+        actuator = next(
+            actuator
+            for actuator in body + hands
+            if any(
+                re.fullmatch(pattern, name) for pattern in actuator.target_names_expr
+            )
+        )
+        scales.append(
+            0.25 * cast(float, actuator.effort_limit) / actuator.stiffness
+            if name in BODY_JOINTS
+            else 1.0
+        )
+        kp.append(actuator.stiffness)
+        kd.append(actuator.damping)
+        limits.append(cast(float, actuator.effort_limit))
+    return scales, kp, kd, limits
+
+
+def make_env_cfg(num_envs: int, actuation: str = "position") -> ManagerBasedRlEnvCfg:
+    actuators, hand_actuators = _position_actuators()
+    if actuation == "torque":
+        motor_actuators = tuple(
+            BuiltinMotorActuatorCfg(
+                target_names_expr=actuator.target_names_expr,
+                effort_limit=cast(float, actuator.effort_limit),
+                armature=actuator.armature,
+                frictionloss=actuator.frictionloss,
+                viscous_damping=actuator.viscous_damping,
+            )
+            for actuator in actuators + hand_actuators
+        )
+    else:
+        motor_actuators = actuators + hand_actuators
     robot = EntityCfg(
         spec_fn=_dex3_spec,
         init_state=replace(KNEES_BENT_KEYFRAME, pos=(-1.2, 0.0, 0.76)),
         articulation=EntityArticulationInfoCfg(
-            actuators=actuators + hand_actuators,
+            actuators=motor_actuators,
             soft_joint_pos_limit_factor=0.9,
         ),
     )
@@ -167,7 +209,9 @@ def make_env_cfg(num_envs: int) -> ManagerBasedRlEnvCfg:
                 actuator_names=HAND_JOINTS,
                 use_default_offset=False,
             ),
-        },
+        }
+        if actuation == "position"
+        else {},
         sim=SimulationCfg(
             njmax=256,
             mujoco=MujocoCfg(timestep=0.005, impratio=10, cone="elliptic"),

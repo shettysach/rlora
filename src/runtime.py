@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 from pathlib import Path
 from time import sleep
 
@@ -27,11 +28,28 @@ def _reference_chunk(episodes: list[Episode], start: int, length: int) -> np.nda
     )
 
 
+def _trace_state(env: MjlabEnv, trace: dict[str, list[torch.Tensor]]) -> None:
+    origins = env.env.scene.env_origins
+    base_pose = env.robot.data.root_link_pose_w.clone()
+    box_pose = env.box_pose().clone()
+    base_pose[:, :3] -= origins
+    box_pose[:, :3] -= origins
+    trace["joint_pos"].append(env.planner_state().clone())
+    trace["joint_vel"].append(
+        env.robot.data.joint_vel.index_select(-1, env.planner_joint_ids).clone()
+    )
+    trace["base_pose"].append(base_pose)
+    trace["box_pose"].append(box_pose)
+
+
 def run(args: argparse.Namespace) -> None:
     episodes = load_episodes(args.eval_archive, args.episode_indices)
     count = len(episodes)
     env = MjlabEnv(
-        count, device=args.device, appearances=[e.appearance for e in episodes]
+        count,
+        device=args.device,
+        appearances=[e.appearance for e in episodes],
+        actuation=args.actuation,
     )
     viewer = None
     planner = None
@@ -41,6 +59,7 @@ def run(args: argparse.Namespace) -> None:
             env.reset(
                 seed=args.seed,
                 base_pose=torch.from_numpy(np.stack([e.base_pose for e in episodes])),
+                base_vel=torch.from_numpy(np.stack([e.base_vel for e in episodes])),
                 joint_pos=torch.from_numpy(np.stack([e.joint_pos for e in episodes])),
                 box_pose=torch.from_numpy(np.stack([e.box_pose for e in episodes])),
             )
@@ -59,6 +78,20 @@ def run(args: argparse.Namespace) -> None:
             args.sonic_bundle, count, device=args.device, cuda_stream=env.cuda_stream
         )
         controller.reset()
+        if args.startup == "static-152":
+            with env.compute_context():
+                zero_token = torch.zeros(count, 64, device=env.device)
+                for _ in range(152):
+                    controller.act(reference=zero_token, robot_state=env.robot_state())
+        if args.control_delay:
+            with env.compute_context():
+                delayed_body, delayed_hands = env.hold_action()
+        trace: dict[str, list[torch.Tensor]] | None = (
+            defaultdict(list) if args.trace_output is not None else None
+        )
+        if trace is not None:
+            with env.compute_context():
+                _trace_state(env, trace)
         if args.mode == "replay":
             replay_actions = torch.as_tensor(
                 _reference_chunk(episodes, 0, args.max_steps), device=args.device
@@ -98,9 +131,22 @@ def run(args: argparse.Namespace) -> None:
                     joints = controller.act(
                         reference=reference[:, :64], robot_state=env.robot_state()
                     )
-                    env.step(joints, reference[:, 64:78])
+                    hands = reference[:, 64:78]
+                    if args.control_delay:
+                        applied_body, applied_hands = delayed_body, delayed_hands
+                        delayed_body, delayed_hands = joints, hands
+                    else:
+                        applied_body, applied_hands = joints, hands
+                    env.step(applied_body, applied_hands)
                     executed += 1
                     task.update()
+                    if trace is not None:
+                        trace["target"].append(env.last_target.clone())
+                        trace["torque"].append(env.last_torque.clone())
+                        trace["action"].append(
+                            torch.cat((applied_body, applied_hands), dim=-1).clone()
+                        )
+                        _trace_state(env, trace)
                     newly_done = (terminal_steps == 0) & (task.success | task.fell)
                     terminal_steps.masked_fill_(newly_done, executed)
                     succeeded |= newly_done & task.success
@@ -119,6 +165,24 @@ def run(args: argparse.Namespace) -> None:
             print(
                 f"episode {episode.index}: success={success}, fell={fall}, "
                 f"terminal_step={step if step else '-'}"
+            )
+        if trace is not None:
+            args.trace_output.parent.mkdir(parents=True, exist_ok=True)
+            with env.compute_context():
+                samples = {
+                    key: torch.stack(value).cpu().numpy()
+                    for key, value in trace.items()
+                }
+            np.savez_compressed(
+                args.trace_output,
+                **samples,
+                episode_indices=np.array([e.index for e in episodes]),
+                terminal_steps=np.array(steps),
+                success=np.array(successes),
+                fell=np.array(falls),
+                actuation=args.actuation,
+                startup=args.startup,
+                control_delay=args.control_delay,
             )
     finally:
         if controller is not None:
@@ -151,6 +215,12 @@ def main() -> None:
     parser.add_argument("--inference-steps", type=int, default=10)
     parser.add_argument("--prompt", help="Override the recorded task instruction")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--actuation", choices=("torque", "position"), default="position"
+    )
+    parser.add_argument("--startup", choices=("cold", "static-152"), default="cold")
+    parser.add_argument("--control-delay", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--trace-output", type=Path)
     parser.add_argument("--viewer", action="store_true")
     args = parser.parse_args()
     if args.max_steps < 1:

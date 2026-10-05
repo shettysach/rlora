@@ -19,8 +19,8 @@ from sim.env import MjlabEnv
     ],
 )
 def test_physics_step_matches_mjlab_without_reset_index_discovery(monkeypatch, device):
-    def physics_scene(count):
-        cfg = make_env_cfg(count)
+    def physics_scene(count, actuation="position"):
+        cfg = make_env_cfg(count, actuation=actuation)
         # Keep the actual robot/actuators/box/table; omit the large visual room.
         del cfg.scene.entities["room"]
         return cfg
@@ -112,4 +112,39 @@ def test_physics_step_matches_mjlab_without_reset_index_discovery(monkeypatch, d
             assert not torch.equal(initial, env.env.sim.data.qpos.clone())
     finally:
         reference.close()
+        env.close()
+
+
+def test_torque_control_recomputes_each_physics_substep(monkeypatch):
+    def physics_scene(count, actuation="position"):
+        cfg = make_env_cfg(count, actuation=actuation)
+        del cfg.scene.entities["room"]
+        return cfg
+
+    monkeypatch.setattr("sim.env.make_env_cfg", physics_scene)
+    env = MjlabEnv(2, device="cpu", actuation="torque")
+    observed = []
+    original = env.robot.set_joint_effort_target
+
+    def capture(effort, joint_ids):
+        q = env.robot.data.joint_pos.index_select(-1, joint_ids)
+        dq = env.robot.data.joint_vel.index_select(-1, joint_ids)
+        expected = torch.clamp(
+            env.motor_kp * (env.last_target - q) - env.motor_kd * dq,
+            -env.motor_limit,
+            env.motor_limit,
+        )
+        torch.testing.assert_close(effort, expected)
+        observed.append(effort.clone())
+        original(effort, joint_ids=joint_ids)
+
+    try:
+        monkeypatch.setattr(env.robot, "set_joint_effort_target", capture)
+        with env.compute_context():
+            body = torch.full((2, 29), 0.4)
+            env.step(body, torch.zeros(2, 14))
+            assert len(observed) == 4
+            assert not torch.equal(observed[0], observed[-1])
+            assert torch.isfinite(env.planner_state()).all()
+    finally:
         env.close()

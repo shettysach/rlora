@@ -83,6 +83,7 @@ class Episode:
     index: int
     instruction: str
     base_pose: np.ndarray
+    base_vel: np.ndarray
     joint_pos: np.ndarray
     box_pose: np.ndarray
     actions: np.ndarray
@@ -118,6 +119,7 @@ def load_episodes(archive: Path, indices: list[int]) -> list[Episode]:
                 columns=[
                     "observation.state",
                     "observation.base_pose",
+                    "observation.base_vel",
                     "observation.object_poses",
                     "action",
                 ],
@@ -131,6 +133,7 @@ def load_episodes(archive: Path, indices: list[int]) -> list[Episode]:
                     index=index,
                     instruction=entry["tasks"][0],
                     base_pose=values("observation.base_pose")[0],
+                    base_vel=values("observation.base_vel")[0],
                     joint_pos=values("observation.state")[0],
                     box_pose=values("observation.object_poses")[0],
                     actions=values("action"),
